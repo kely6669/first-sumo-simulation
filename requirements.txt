@@ -1,0 +1,11 @@
+# Dependencies
+#
+# This project has no third-party Python dependencies: it uses only the
+# `traci` and `sumolib` modules that ship inside SUMO's tools directory,
+# plus the Python standard library.
+#
+# All you need is:
+#   1. SUMO installed  ->  https://sumo.dlr.de/docs/Installing.html
+#   2. SUMO_HOME environment variable pointing at it
+#
+# Kept here so `pip install -r requirements.txt` does not fail on CI.

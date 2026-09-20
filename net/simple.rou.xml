@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Vehicle types and routes only.  No <flow>/<vehicle> elements here:
+  every vehicle is inserted at runtime through TraCI (see scripts/).
+
+  Route naming: r_<from><to>, where the letters are compass directions.
+-->
+<routes>
+    <vType id="car" vClass="passenger" accel="2.6" decel="4.5"
+           length="5" maxSpeed="13.9" sigma="0.5" color="1,0.8,0"/>
+    <vType id="bus" vClass="bus" accel="1.2" decel="4.0"
+           length="12" maxSpeed="13.9" sigma="0.5" color="0,0.8,0"/>
+
+    <!-- east approach -> west exit (straight through) -->
+    <route id="r_EW" edges="rightE_A A_leftW"/>
+    <!-- east approach -> south exit (left turn) -->
+    <route id="r_EW_L" edges="rightE_A A_bottomN"/>
+    <!-- west approach -> east exit (straight through) -->
+    <route id="r_WE" edges="leftW_A A_rightE"/>
+    <!-- south approach -> north exit (straight through) -->
+    <route id="r_NS" edges="bottomN_A A_topS"/>
+    <!-- north approach -> south exit (straight through) -->
+    <route id="r_SN" edges="topS_A A_bottomN"/>
+</routes>

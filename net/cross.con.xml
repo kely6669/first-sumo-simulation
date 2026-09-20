@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<connections>
+    <connection from="rightE_A" to="A_bottomN"/>
+    <connection from="rightE_A" to="A_leftW"/>
+    <connection from="rightE_A" to="A_topS"/>
+    <connection from="leftW_A" to="A_topS"/>
+    <connection from="leftW_A" to="A_rightE"/>
+    <connection from="leftW_A" to="A_bottomN"/>
+    <connection from="bottomN_A" to="A_leftW"/>
+    <connection from="bottomN_A" to="A_topS"/>
+    <connection from="bottomN_A" to="A_rightE"/>
+    <connection from="topS_A" to="A_rightE"/>
+    <connection from="topS_A" to="A_bottomN"/>
+    <connection from="topS_A" to="A_leftW"/>
+</connections>

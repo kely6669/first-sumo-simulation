@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# SUMO output files (regenerated on every run)
+*.xml.bak
+outputs/
+results/*.csv
+tripinfo*.xml
+summary*.xml
+edgeData*.xml
+vehroutes*.xml
+
+# SUMO / netedit settings and autosave
+*.sumocfg.bak
+netedit*.xml
+.viewsettings.xml
+settings.xml
+
+# editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
