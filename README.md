@@ -1,110 +1,92 @@
 # first-sumo-simulation
 
-用 Python + TraCI 连接 SUMO，做一个十字路口的信号控制实验。
+用 Python 连上 SUMO，自己搭一个十字路口，然后实时控制它的红绿灯。
 
-A four-arm signalised intersection built from scratch, driven entirely from
-Python through SUMO's TraCI interface: network generation, runtime vehicle
-insertion, and a traffic-signal controller written in plain Python.
-
----
-
-## 这个项目做了什么
-
-```
-手写 XML（节点/边/连接）
-        │  netconvert 编译
-        ▼
-   十字路口路网  ──────────┐
-                          │  traci.start()  启动 SUMO 并建立双向通道
-   车流文件（车型+路线）────┤
-                          ▼
-              Python 实时控制信号灯
-                          │
-                          ▼
-                   排队 / 完成量统计
-```
-
-三个阶段，对应 `scripts/` 里的三个脚本：
-
-| 脚本 | 做什么 | 核心 API |
-|---|---|---|
-| `1_connect.py` | 连接 SUMO，逐步推进仿真，读实时数据 | `traci.start` / `simulationStep` / `lane.getLastStepHaltingNumber` |
-| `2_add_vehicles.py` | 仿真运行中动态加车，到边界后清理 | `traci.vehicle.add` / `remove` / `getRoadID` |
-| `3_signal_control.py` | 用 Python 替换固定配时，做感应式控制，并与基线对比 | `traci.trafficlight.getPhase` / `setPhase` |
+This is my first SUMO project: a four-arm intersection built from plain XML,
+driven entirely from Python through TraCI — network generation, runtime
+vehicle insertion, and a signal controller written in Python.
 
 ---
 
-## 快速开始
+## 这东西是干嘛的
 
-### 1. 装 SUMO
+SUMO 是个交通仿真软件。它自己会按固定配时放红绿灯，但我想知道：**能不能用 Python 实时改红绿灯？**
 
-下载：https://sumo.dlr.de/docs/Installing.html
+流程是这样的：
 
-装完设置环境变量（TraCI 需要它来定位 SUMO）：
+```
+我手写三个 XML（节点、道路、连接）
+        ↓  netconvert 编译
+   十字路口路网
+        ↓  traci.start() 启动 SUMO 并连上
+   Python 一边看排队情况，一边改红绿灯
+```
+
+三个脚本，一步比一步深：
+
+- **`1_connect.py`** — 先连上，能读到数据就行
+- **`2_add_vehicles.py`** — 仿真跑着的时候往里塞车
+- **`3_signal_control.py`** — 用 Python 代替固定配时，管红绿灯
+
+---
+
+## 怎么跑
+
+先装 [SUMO](https://sumo.dlr.de/docs/Installing.html)，然后设个环境变量：
 
 ```powershell
-# Windows
 setx SUMO_HOME "C:\Program Files (x86)\Eclipse\Sumo"
 ```
-```bash
-# Linux / macOS
-export SUMO_HOME=/usr/share/sumo
-```
 
-> 脚本会自动去 `SUMO_HOME` 找 SUMO；找不到时会依次尝试几个常见的安装路径，并在失败时给出提示。
-
-### 2. 跑起来
+> 不设也行，脚本会自己去几个常见路径找，找不到会告诉你怎么办。
 
 ```bash
-git clone https://github.com/<你的用户名>/first-sumo-simulation.git
+git clone https://github.com/kely6669/first-sumo-simulation.git
 cd first-sumo-simulation
 
-python scripts/generate_network.py          # 生成路网（调用 netconvert）
-python scripts/1_connect.py                 # 连接，跑 10 秒
-python scripts/2_add_vehicles.py            # 动态加车，跑 600 秒
-python scripts/3_signal_control.py --compare  # 控制器 vs 固定配时
+python scripts/generate_network.py             # 生成路网
+python scripts/1_connect.py                    # 连上看看
+python scripts/2_add_vehicles.py               # 加车跑
+python scripts/3_signal_control.py --compare   # 我的控制器 vs 固定配时
 ```
 
-加 `--gui` 可以看到 SUMO 界面：
+想看界面就加 `--gui`：
 
 ```bash
 python scripts/3_signal_control.py --gui
 ```
 
-依赖只有 SUMO 自带的 `traci`（随 SUMO 安装，无需 pip 安装）。
+不用 pip 装任何东西——`traci` 是 SUMO 自带的。
 
 ---
 
-## 路网结构
+## 路网长这样
 
 ```
-                 N (300, 0)
+                 N
                  │
-                 │  北进口 2 车道 / 北出口 1 车道
                  │
-    W (0,300) ───A (300,300)─── E (600,300)
-                 │   ↑ 信号灯路口
+    W ────────── A ────────── E
+                 │      ↑ 红绿灯在这儿
                  │
-                 S (300, 600)
+                 S
 ```
 
-- **5 个节点**：4 个路网边界 + 1 个中心路口
-- **8 条边**：每个方向 1 条进口道（2 车道）+ 1 条出口道（1 车道）
-- **12 条连接**：每个进口 → 左转 / 直行 / 右转
-- **1 个信号灯**：8 个相位，周期 90 秒
+5 个点（4 个边界 + 1 个路口）、8 条路（每个方向一条进一条出）、12 条连接（每个进口能左转/直行/右转）。
 
-边命名规则：`X_A` 是**进入**路口的车流，`A_X` 是**驶出**路口的车流。
+名字的规律：`X_A` 是**往路口里开**的，`A_X` 是**从路口往外开**的。
 
 ---
 
-## 踩过的坑（都写在代码注释里）
+## 我踩的三个坑
 
-### 1. 车走到路网边界不会自动消失
+这部分可能是整个仓库最有用的东西。
 
-路网边界是 `dead_end`，车跑完路线后会停在那里等，不会自己消失。
-第一版跑了 600 秒，加入 400 辆，**完成 0 辆，网上积了 111 辆**。
+### 一、车跑到边界不会自己消失
 
-必须自己清理：
+路网边界是死胡同，车跑完路线就停在原地不动了。我第一版跑了 600 秒，加进去 400 辆，**结果 0 辆完成、111 辆卡在网上**。
+
+得自己动手删：
 
 ```python
 if traci.vehicle.getRoadID(v).startswith("A_") and \
@@ -112,102 +94,85 @@ if traci.vehicle.getRoadID(v).startswith("A_") and \
     traci.vehicle.remove(v)
 ```
 
-### 2. 需求量必须低于通行能力，否则排队无限增长
+### 二、车流量不能超过路口的通行能力
 
-信号周期 90 秒，每个方向绿灯约 24 秒，所以单个进口的通行能力是：
+这个坑我算了半天才想明白。
 
-```
-1800 veh/h × (24 / 90) ≈ 480 veh/h ≈ 每 7.5 秒 1 辆
-```
-
-第一版把发车间隔设成 6 秒（= 600 veh/h 每方向，合计 2400 veh/h），
-远超四个方向合计约 1920 veh/h 的能力，结果东进口积压 54 辆、最长静止 41 秒。
-
-诊断输出（`scripts/` 里可以复现）：
+信号周期 90 秒，每个方向绿灯 24 秒，所以一个进口一小时能过：
 
 ```
-rightE_A   54 辆   最长静止 41 秒
-leftW_A    25 辆   最长静止 52 秒
+1800 辆 × (24 ÷ 90) ≈ 480 辆
 ```
 
-改成 12 秒间隔后，网上车辆稳定在 20~27 辆，排队 0~4 辆。
+也就是**大概 7.5 秒一辆**。
 
-### 3. 感应控制不一定比固定配时好（本项目实测结果）
+我第一版设成 6 秒一辆（每个方向 600 辆/小时，四个方向加起来 2400），**远超路口总共能承受的 1920**。结果东进口积压 54 辆，最长静止 41 秒。
 
-`3_signal_control.py --compare` 的实测输出：
+改成 12 秒一辆之后，网上稳定在 20 多辆，排队基本为 0。
 
-| 指标 | 固定配时 | Python 感应控制 |
+**记住这个判断方法**：以后跑仿真看到排队一直涨，先算需求量和通行能力，别急着改代码。
+
+### 三、我的智能控制器反而不如固定配时 😅
+
+跑 `3_signal_control.py --compare` 的结果：
+
+| | 固定配时 | 我的感应控制 |
 |---|---|---|
 | 平均排队 | **5.7** | 7.8 |
 | 最大排队 | **13** | 20 |
-| 完成车辆 | **72** | 68 |
-| 信号切换次数 | 0 | 16 |
+| 通过车辆 | **72** | 68 |
+| 切换次数 | 0 | 16 |
 
-**感应控制反而差了 36%。** 而且连跑 5 次结果完全一致——**这套设置是确定性的**
-（发车计划固定、控制器不含随机成分），所以这个差异是本场景下的真实差异，
-不是随机波动。
+**我的控制器差了 36%。**
 
-原因分析：间隙中断（gap-out）策略在本场景下过于激进——
-路网的最小绿 10 秒、黄灯 3 秒，频繁切换导致每个周期的损失时间偏多；
-而固定配时的 24 秒长绿反而更高效。
+而且连跑 5 次结果一模一样——因为这套设置是确定性的（发车计划固定，控制器也没有随机成分），所以这不是随机波动，是真的差。
 
-**这个负结果保留在仓库里，因为它说明的问题比正结果更有价值：**
-控制器不是"越智能越好"，必须在具体需求水平下验证。
+**为什么会这样？** 我的"间隙中断"策略太激进了。最小绿只有 10 秒、黄灯 3 秒，频繁切换导致每个周期浪费的时间变多。固定配时那个 24 秒的长绿反而效率更高。
 
-改进方向：
-- 提高最小绿（10 → 20 秒），减少切换次数
-- gap-out 加一个额外条件："下一相位确实有车"才切换
-- 或者用强化学习让策略自己学出切换时机（见 `sumo-rl`）
+**我把这个负结果留着了**，因为我觉得它比"我的算法提升了 30%"更有意思——**控制器不是越智能越好，得在具体场景下试**。
 
-**注意**：确定性只在本场景成立。换需求水平、加随机发车、或者换成学习型
-控制器之后，就必须多种子重复 + 置信区间了。
+想改的话可以试：把最小绿从 10 提到 20、切换前先确认对面真有车、或者上强化学习（看 [sumo-rl](https://github.com/LucasAlegre/sumo-rl)）。
 
 ---
 
-## 可以改什么
+## 想自己改着玩
 
-`scripts/sumo_config.py` 顶部的参数：
+参数都在 `scripts/sumo_config.py` 顶上：
 
 ```python
-LANES = 2            # 每个进口的车道数
-ARM_LENGTH = 300     # 路口到边界的距离（米）
+LANES = 2            # 每个进口几车道
+ARM_LENGTH = 300     # 路口到边界多远（米）
 SPEED = 13.9         # 限速 m/s
-ROUTES = [...]       # 各方向的发车间隔
 ```
 
-`scripts/3_signal_control.py`：
+控制器参数在 `scripts/3_signal_control.py`：
 
 ```python
 MIN_GREEN = 10       # 最小绿灯
 MAX_GREEN = 45       # 最大绿灯
 ```
 
-改完直接重跑，路网会自动重新生成。
+改完直接重跑，路网会自动重新生成。几个可以试的实验：
 
-**试试这几个实验：**
-
-1. 把 `MIN_GREEN` 从 10 改成 20，看感应控制能不能超过固定配时
-2. 把 `LANES` 从 2 改成 1，看通行能力怎么变
-3. 把发车间隔全部减半，看什么时候开始堵
+1. 最小绿改成 20，看我的控制器能不能赢过固定配时
+2. 车道数改成 1，看通行能力掉多少
+3. 发车间隔全部减半，看什么时候开始堵
 
 ---
 
-## 可以改进的地方
+## 还没做的
 
-- [ ] 控制器只用了排队长度，没有用等待时间或延误
-- [ ] 单次运行没有统计意义，需要多种子重复 + 置信区间
-- [ ] 单路口，没有考虑相邻路口的协调（绿波带）
-- [ ] 未做标定：车流是合成的，没有真实调查数据
+- [ ] 控制器只看排队长度，没考虑等待时间和延误
+- [ ] 只跑单次，没有多种子重复 + 置信区间
+- [ ] 单路口，没做相邻路口的协调（绿波带）
+- [ ] 车流是合成的，没做过标定
 
 ---
 
-## 参考资料
+## 参考
 
-- [SUMO 官方文档](https://sumo.dlr.de/docs/)
-- [TraCI 接口文档](https://sumo.dlr.de/docs/TraCI/index.html)
-- [netconvert 路网编译](https://sumo.dlr.de/docs/netconvert.html)
-- [sumo-rl](https://github.com/LucasAlegre/sumo-rl) — 如果要把控制器换成强化学习
+- [SUMO 文档](https://sumo.dlr.de/docs/)
+- [TraCI 接口](https://sumo.dlr.de/docs/TraCI/index.html)
+- [sumo-rl](https://github.com/LucasAlegre/sumo-rl) — 想上强化学习的话看这个
 
-## License
-
-MIT
+MIT License
