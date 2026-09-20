@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 
+# allow running as `python scripts/3_signal_control.py` from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sumo_config import (  # noqa: E402
     ROOT, ROUTES, TLS_ID, setup_traci, start_args,
