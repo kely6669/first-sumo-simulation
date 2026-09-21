@@ -107,8 +107,13 @@ def main() -> int:
               f"  ({row['wall_clock_s']}s)")
 
     INDEX.parent.mkdir(parents=True, exist_ok=True)
+    # wall_clock_s is the machine's stopwatch, not a result.  It is printed
+    # above while the batch runs, but leaving it in the committed index would
+    # mean the file differs on every run - the same problem as SUMO's `step`
+    # duration attribute, which analyse_run.read_summary_steps drops.
+    fields = [name for name in rows[0] if name != "wall_clock_s"]
     with INDEX.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 

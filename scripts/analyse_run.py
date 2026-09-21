@@ -58,6 +58,26 @@ def numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df
 
 
+def read_summary_steps(path: Path) -> pd.DataFrame:
+    """Per-second network state, with SUMO's stopwatch removed.
+
+    SUMO's ``<step>`` element carries a ``duration`` attribute, which its
+    documentation defines as "the computation time for that simulation step
+    (in milliseconds)" - the machine's timing, not a measurement of the
+    traffic.  Over a 3600 s run it correlates 0.03 with the number of
+    vehicles in the network and 0.01 with time; it is noise.
+
+    Keeping it would mean two identical runs never produce identical files,
+    so every re-run shows up as a diff and a committed results table stops
+    meaning anything.  Everything else in the element is a simulation result
+    and is kept.
+    """
+    steps = numeric(read_xml_records(path, "step"),
+                    ["time", "inserted", "arrived", "running", "halting",
+                     "waiting", "teleports", "collisions", "meanSpeed"])
+    return steps.drop(columns=["duration"], errors="ignore")
+
+
 def read_queue_series(path: Path) -> pd.DataFrame:
     """queues.xml is <data><lanes><lane .../></lanes></data> per step.
 
@@ -201,9 +221,7 @@ def load_run(run_dir: Path) -> dict:
     trips = numeric(read_xml_records(run_dir / "tripinfo.xml", "tripinfo"),
                     ["duration", "waitingTime", "timeLoss", "routeLength",
                      "departDelay", "stopTime"])
-    steps = numeric(read_xml_records(run_dir / "summary.xml", "step"),
-                    ["time", "inserted", "arrived", "running", "halting",
-                     "waiting", "teleports", "collisions", "meanSpeed"])
+    steps = read_summary_steps(run_dir / "summary.xml")
     queues = read_queue_series(run_dir / "queues.xml")
     return {"trips": trips, "steps": steps, "queues": queues}
 
