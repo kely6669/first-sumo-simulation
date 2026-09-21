@@ -70,8 +70,9 @@ def collect(index: pd.DataFrame) -> pd.DataFrame:
             **single.queue_metrics(data["queues"]),
         })
     if missing:
-        print(f"    [!] dropped {len(missing)} run(s) with no usable data: "
-              f"{missing[:3]}")
+        print(f"    [!] {len(missing)} run(s) had no usable output: {missing[:3]}")
+        if len(missing) == len(index):
+            print("        (all of them - see the note at the end of this output)")
     return pd.DataFrame(rows)
 
 
@@ -220,6 +221,18 @@ def main() -> int:
         print("    no problems found")
 
     if df.empty:
+        # The usual cause is a fresh clone: results/index.csv is committed but
+        # results/runs/ is not, because the raw output is regenerable.  Saying
+        # only "nothing to report" would leave the reader stuck, so say what
+        # to run.
+        print()
+        print("  Nothing to aggregate.  results/index.csv lists runs whose raw")
+        print("  output is not in this checkout - results/runs/ is not committed,")
+        print("  because it is regenerated.  Produce it with:")
+        print()
+        print("      python scripts/run_experiments.py")
+        print()
+        print("  then run this script again.")
         return 1
 
     compare(df)
