@@ -23,6 +23,15 @@ vehroutes*.xml
 # index and the aggregated table are worth committing.
 results/runs/
 
+# Networks and demand built from OpenStreetMap.
+# ~10 MB each and reproducible with `scripts/build_from_osm.py`, so they are
+# generated rather than committed.  The hand-written cross.*.xml files ARE
+# committed, because those are source rather than build output.
+net/real.net.xml
+net/real.net.rou.xml
+net/*.osm
+net/*.osm.gz
+
 # editors and OS
 .vscode/
 .idea/

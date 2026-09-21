@@ -33,6 +33,60 @@ SUMO 是一个开源的交通仿真软件，它自带的固定配时红绿灯很
 | **`2_add_vehicles.py`** | 仿真跑着的时候往里塞车 |
 | **`3_signal_control.py`** | 用 Python 代替固定配时，接管红绿灯 |
 
+除了这三个，还有一套**做实验**用的脚本：
+
+| 脚本 | 干什么 |
+|---|---|
+| **`build_from_osm.py`** | **用真实地图建路网**（OpenStreetMap） |
+| `run_experiments.py` | 批量跑：策略 × 需求 × 随机种子 |
+| `analyse_results.py` | 用 pandas 汇总所有结果，出对比表 |
+
+---
+
+## 🗺️ 两种路网：自己画的 vs 真实地图
+
+上面那个十字路口是**手写 XML 画出来的**——结构简单、方便理解原理，但它是虚构的。
+
+如果你想分析**某个真实地点**，用这个：
+
+```bash
+# 方式一：给一个经纬度范围，自动下载地图
+python scripts/build_from_osm.py --bbox 116.470,39.875,116.485,39.888 --trips
+
+# 方式二：用你自己从 openstreetmap.org 导出的 .osm 文件
+python scripts/build_from_osm.py --osm map.osm --trips
+```
+
+它会做完三件事：
+
+```
+下载 / 读取 .osm 文件
+        ↓  netconvert --osm-files
+真实路网（车道数、路口形状都来自实际地图）
+        ↓  randomTrips.py
+车流文件（随机生成，可跑）
+```
+
+**实测效果**（用 SUMO 自带的德国某区域地图）：
+
+| | 手写十字路口 | 真实地图 |
+|---|---|---|
+| 道路数 | 8 | **6,961** |
+| 路口数 | 5 | **3,457** |
+| 信号灯 | 1 | **199** |
+
+建好之后直接跑：
+
+```bash
+sumo-gui -n net/real.net.xml -r net/real.net.rou.xml
+```
+
+> ⚠️ **踩过的坑**：`netconvert` 的 `--tls.guess.threshold` 参数和 `--tls.guess` 一起用会生成**损坏的路网**（信号灯定义重复，SUMO 拒绝加载）。所以脚本只用 `--tls.guess`。
+>
+> 而且 `netconvert` **会成功退出但写出坏文件**。所以脚本里加了"冒烟测试"——生成完立刻让 SUMO 加载一次，加载不了就报错。**别只看 netconvert 返回 0 就以为成功了。**
+
+> 📌 OSM 数据是 ODbL 协议，写报告时要注明 **© OpenStreetMap contributors**。
+
 ---
 
 ## 🚀 五分钟跑起来
