@@ -1,0 +1,5 @@
+,duration,duration,waitingTime,waitingTime,timeLoss,timeLoss
+,count,mean,count,mean,count,mean
+vType,,,,,,
+bus,40,65.6,40,7.2,40,22.8
+car,1259,72.3,1259,18.7,1259,27.3

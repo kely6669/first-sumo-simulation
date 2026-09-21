@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The same intersection as simple.rou.xml, but with actual demand.
+
+  simple.rou.xml defines vehicle types and routes only, no flow and no
+  vehicle elements, because those demos insert vehicles at runtime through
+  TraCI. That is fine for scripts/2_add_vehicles.py and
+  scripts/3_signal_control.py, but loading simple.rou.xml on its own gives
+  you an empty network and nothing to analyse.
+
+  This file has flow elements, so plain sumo inserts traffic by itself and
+  you get tripinfo and summary output to work with. See the README for the
+  commands.
+
+  HOW THE FLOWS WERE SIZED
+  Each exit edge here has ONE lane and two movements share it, so the binding
+  constraint is the exit, not the signal:
+
+      A_leftW   (west exit)  <- east-through 240 + west-left   60 = 300
+      A_rightE  (east exit)  <- west-through 240 + east-right  60 = 300
+      A_topS    (south exit) <- south-through 300 + north-left  40 = 340
+      A_bottomN (north exit) <- north-through 300 + south-left  40 = 340
+
+  A single lane discharges roughly 700 to 900 veh/h once signal control is
+  taken into account, so all four exits sit comfortably below that.
+
+  This balance matters. An earlier version sent 400 veh/h of westbound
+  traffic into the east exit (about 460 with turns) and the queue grew
+  without bound over the whole run: average queue per 600 s segment went
+  12, 21, 30, 38, 46 and never flattened. Uneven demand, not a bug in the
+  code, is the usual reason a SUMO scenario never reaches steady state.
+
+  NOTE: XML comments may not contain two consecutive hyphens, which is why no
+  command examples appear in this header. That rule bit us twice while
+  building this repo.
+-->
+<routes>
+    <vType id="car" vClass="passenger" accel="2.6" decel="4.5"
+           length="5" maxSpeed="13.9" sigma="0.5" color="1,0.8,0"/>
+    <vType id="bus" vClass="bus" accel="1.2" decel="4.0"
+           length="12" maxSpeed="13.9" sigma="0.5" color="0,0.8,0"/>
+
+    <route id="r_EW"   edges="rightE_A A_leftW"/>
+    <route id="r_EW_L" edges="rightE_A A_bottomN"/>
+    <route id="r_WE"   edges="leftW_A A_rightE"/>
+    <route id="r_WE_R" edges="leftW_A A_bottomN"/>
+    <route id="r_NS"   edges="bottomN_A A_topS"/>
+    <route id="r_NS_L" edges="bottomN_A A_leftW"/>
+    <route id="r_SN"   edges="topS_A A_bottomN"/>
+    <route id="r_SN_L" edges="topS_A A_rightE"/>
+
+    <!-- east approach: through 240 + left 60, exiting west / north -->
+    <flow id="f_EW"   type="car" route="r_EW"   begin="0" end="3600"
+          vehsPerHour="240" departLane="best" departSpeed="max"/>
+    <flow id="f_EW_L" type="car" route="r_EW_L" begin="0" end="3600"
+          vehsPerHour="60"  departLane="best" departSpeed="max"/>
+
+    <!-- west approach: through 240 + right 60, plus a bus line -->
+    <flow id="f_WE"   type="car" route="r_WE"   begin="0" end="3600"
+          vehsPerHour="240" departLane="best" departSpeed="max"/>
+    <flow id="f_WE_R" type="car" route="r_WE_R" begin="0" end="3600"
+          vehsPerHour="60"  departLane="best" departSpeed="max"/>
+    <flow id="f_WE_B" type="bus" route="r_WE"   begin="0" end="3600"
+          vehsPerHour="40"  departLane="best" departSpeed="max"/>
+
+    <!-- south approach: through 300 + left 40 -->
+    <flow id="f_NS"   type="car" route="r_NS"   begin="0" end="3600"
+          vehsPerHour="300" departLane="best" departSpeed="max"/>
+    <flow id="f_NS_L" type="car" route="r_NS_L" begin="0" end="3600"
+          vehsPerHour="40"  departLane="best" departSpeed="max"/>
+
+    <!-- north approach: through 300 + left 40 -->
+    <flow id="f_SN"   type="car" route="r_SN"   begin="0" end="3600"
+          vehsPerHour="300" departLane="best" departSpeed="max"/>
+    <flow id="f_SN_L" type="car" route="r_SN_L" begin="0" end="3600"
+          vehsPerHour="40"  departLane="best" departSpeed="max"/>
+</routes>
