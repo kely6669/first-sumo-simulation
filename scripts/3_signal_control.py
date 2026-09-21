@@ -1,4 +1,4 @@
-"""Step 3 - control the traffic signal from Python (actuated control).
+"""Step 3 - control the traffic signal from Python.
 
 Run:  python scripts/3_signal_control.py [--gui] [--duration 900]
       python scripts/3_signal_control.py --compare      # both controllers
@@ -6,167 +6,111 @@ Run:  python scripts/3_signal_control.py [--gui] [--duration 900]
 This is the starting point of any signal-optimisation study:
 
     1. read state      traci.lane.getLastStepHaltingNumber(lane)
-    2. decide          plain Python logic (here: gap-out / max-out)
+    2. decide          plain Python logic (see scripts/control.py)
     3. act             traci.trafficlight.setPhase(tls, phase)
 
 Replace step 2 with reinforcement learning, a genetic algorithm or fuzzy
-logic and you have a research contribution.  The infrastructure around it
-does not change.
+logic and you have a research contribution.  The infrastructure around it -
+this file, the runner, the analysis - does not change.  Adding a strategy
+means adding one class to ``control.CONTROLLERS``.
 
-Controller
-    minimum green  10 s   - never switch earlier
-    maximum green  45 s   - force a switch to avoid starving the cross street
-    gap-out              - after minimum green, switch if the serving
-                           direction has cleared and the other one has demand
+The comparison reads the same output files the analysis layer reads, so the
+numbers printed here and the numbers in ``results/`` cannot drift apart.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
-import time
 from pathlib import Path
 
-# allow running as `python scripts/3_signal_control.py` from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sumo_config import (  # noqa: E402
-    ROOT, ROUTES, TLS_ID, setup_traci, start_args,
-)
+from analyse_run import load_run, queue_metrics, trip_metrics  # noqa: E402
+from control import CONTROLLERS  # noqa: E402
+from runner import run_simulation  # noqa: E402
+from sumo_config import ROOT  # noqa: E402
 
-setup_traci()
-import traci  # noqa: E402
-
-END_OF_EDGE = 285
-MIN_GREEN = 10
-MAX_GREEN = 45
-
-# Which lanes are served by each green phase (from the state strings in
-# cross.net.xml: phase 0 and 6 give green to the east-west movements).
-PHASE_LANES = {
-    0: ["rightE_A_0", "rightE_A_1", "leftW_A_0", "leftW_A_1"],
-    2: ["topS_A_0", "topS_A_1", "bottomN_A_0", "bottomN_A_1"],
-    6: ["rightE_A_0", "rightE_A_1", "leftW_A_0", "leftW_A_1"],
-}
-NEXT_GREEN = {0: 2, 2: 6, 6: 0}
-GREEN_PHASES = tuple(PHASE_LANES)
+#: Where --compare puts the two runs it produces.
+CONTROL_DIR = ROOT / "results" / "control"
 
 
-def total_queue(lanes: list[str]) -> int:
-    return sum(traci.lane.getLastStepHaltingNumber(l) for l in lanes)
+def run_and_measure(strategy: str, duration: int, gui: bool) -> dict:
+    """Run one strategy and combine the run summary with the measured data."""
+    run_dir = CONTROL_DIR / strategy
+    print(f"\n--- {strategy}, {duration} s ---")
+    print(f"  output -> {run_dir.relative_to(ROOT)}")
+    summary = run_simulation(run_dir, strategy=strategy, duration=duration,
+                             gui=gui, label=strategy)
 
+    # measure from the files rather than from counters kept during the loop:
+    # a second set of numbers computed a second way is a second thing to be
+    # wrong, and the two would drift apart the moment either changes
+    data = load_run(run_dir)
+    measured = {**trip_metrics(data["trips"]), **queue_metrics(data["queues"])}
 
-def run(duration: int, use_gui: bool, control: bool) -> dict:
-    """Run one simulation and return summary metrics."""
-    label = "actuated (python)" if control else "fixed-time (built in)"
-    print(f"\n--- {label}, {duration} s ---")
-
-    traci.start(start_args(gui=use_gui))
-    if control:
-        traci.trafficlight.setPhase(TLS_ID, 0)
-        green_since = traci.simulation.getTime()
-    else:
-        green_since = 0.0
-
-    next_add = {i: 0.0 for i in range(len(ROUTES))}
-    veh_id = 0
-    removed = 0
-    switches = 0
-    queue_samples: list[int] = []
-    wait_samples: list[float] = []
-
-    t0 = time.time()
-    for step in range(duration):
-        traci.simulationStep()
-        now = traci.simulation.getTime()
-
-        for i, (route, headway, _) in enumerate(ROUTES):
-            if now >= next_add[i]:
-                traci.vehicle.add(f"v{veh_id}", routeID=route,
-                                  typeID="bus" if veh_id % 10 == 0 else "car",
-                                  depart=str(now), departLane="best",
-                                  departSpeed="max")
-                next_add[i] = now + headway
-                veh_id += 1
-
-        for vid in traci.vehicle.getIDList():
-            if (traci.vehicle.getRoadID(vid).startswith("A_")
-                    and traci.vehicle.getLanePosition(vid) > END_OF_EDGE):
-                traci.vehicle.remove(vid)
-                removed += 1
-
-        if control:
-            phase = traci.trafficlight.getPhase(TLS_ID)
-            if phase in PHASE_LANES:
-                elapsed = now - green_since
-                served = total_queue(PHASE_LANES[phase])
-                waiting = total_queue(PHASE_LANES[NEXT_GREEN[phase]])
-                if elapsed >= MAX_GREEN or (elapsed >= MIN_GREEN
-                                            and served == 0 and waiting > 0):
-                    traci.trafficlight.setPhase(TLS_ID, NEXT_GREEN[phase])
-                    green_since = now
-                    switches += 1
-
-        # sample every 10 s for the summary statistics
-        if step % 10 == 0:
-            queue_samples.append(sum(total_queue(PHASE_LANES[p])
-                                     for p in (0, 2)))
-            wait_samples.append(sum(traci.lane.getWaitingTime(l)
-                                    for l in PHASE_LANES[0]))
-
-    result = {
-        "controller": label,
-        "inserted": veh_id,
-        "completed": removed,
-        "still_in_network": traci.vehicle.getIDCount(),
-        "switches": switches,
-        "mean_queue": sum(queue_samples) / len(queue_samples) if queue_samples else 0,
-        "max_queue": max(queue_samples) if queue_samples else 0,
-        "wall_clock_s": round(time.time() - t0, 1),
-    }
-    traci.close()
-    for k, v in result.items():
-        print(f"  {k:18s} {v if isinstance(v, str) else round(v, 2)}")
+    result = {**summary, **measured}
+    for key in ("inserted", "completed", "still_in_network", "switches",
+                "mean_queue_m", "max_queue_m", "trips_completed",
+                "mean_waiting_s", "wall_clock_s"):
+        if key in result:
+            value = result[key]
+            shown = f"{value:.2f}" if isinstance(value, float) else value
+            print(f"  {key:18s} {shown}")
     return result
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--duration", type=int, default=900)
+    ap.add_argument("--strategy", default="actuated", choices=sorted(CONTROLLERS),
+                    help="which controller to run on its own")
     ap.add_argument("--compare", action="store_true",
-                    help="run fixed-time first, then the Python controller")
+                    help="run fixed-time first, then the actuated controller")
     ap.add_argument("--csv", type=Path, default=None,
                     help="write the comparison to a CSV file")
     args = ap.parse_args()
 
-    if args.compare:
-        rows = [
-            run(args.duration, args.gui, control=False),
-            run(args.duration, args.gui, control=True),
-        ]
-        base, ctrl = rows
-        print("\n--- comparison ---")
-        print(f"  mean queue   {base['mean_queue']:7.1f} -> "
-              f"{ctrl['mean_queue']:7.1f}  "
-              f"({(ctrl['mean_queue'] - base['mean_queue']) / max(base['mean_queue'], 1) * 100:+.1f}%)")
-        print(f"  completed    {base['completed']:7d} -> {ctrl['completed']:7d}")
-        print("\nnote: this setup is deterministic (fixed departures, no random"
-              "\n      seed), so repeating the run reproduces these numbers"
-              "\n      exactly. That makes the difference real for this scenario"
-              "\n      - but it does NOT tell you whether it holds at other"
-              "\n      demand levels. Sweep the headways in sumo_config.ROUTES.")
-        if args.csv:
-            args.csv.parent.mkdir(parents=True, exist_ok=True)
-            with args.csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                w.writeheader()
-                w.writerows(rows)
-            print(f"  written to {args.csv.relative_to(ROOT)}")
-    else:
-        run(args.duration, args.gui, control=True)
+    if not args.compare:
+        run_and_measure(args.strategy, args.duration, args.gui)
         print("\nTip: add --compare to benchmark against the built-in "
               "fixed-time plan.")
+        return 0
+
+    base = run_and_measure("fixed", args.duration, args.gui)
+    ctrl = run_and_measure("actuated", args.duration, args.gui)
+
+    print("\n--- comparison ---")
+    # spell the arithmetic out rather than burying it in an f-string:
+    # readers should be able to check the sign and the divisor at a glance
+    base_queue = base["mean_queue_m"]
+    ctrl_queue = ctrl["mean_queue_m"]
+    change_pct = (ctrl_queue - base_queue) / max(base_queue, 1e-9) * 100.0
+    print(f"  mean queue   {base_queue:7.2f} -> {ctrl_queue:7.2f}  "
+          f"({change_pct:+.1f}%)")
+    print(f"  mean wait    {base['mean_waiting_s']:7.2f} -> "
+          f"{ctrl['mean_waiting_s']:7.2f} s")
+    print(f"  completed    {base['completed']:7d} -> {ctrl['completed']:7d}")
+    print(f"  phase switches {base['switches']:5d} -> {ctrl['switches']:5d}")
+    print("\nnote: this setup is deterministic (fixed departures, no random"
+          "\n      seed), so repeating the run reproduces these numbers"
+          "\n      exactly. That makes the difference real for this scenario"
+          "\n      - but it does NOT tell you whether it holds at other"
+          "\n      demand levels. Sweep the headways in sumo_config.ROUTES,")
+    print("      or run:  python scripts/run_experiments.py")
+
+    if args.csv:
+        import csv
+        args.csv.parent.mkdir(parents=True, exist_ok=True)
+        keys = ["strategy", "inserted", "completed", "still_in_network",
+                "switches", "trips_completed", "mean_waiting_s",
+                "mean_queue_m", "max_queue_m", "wall_clock_s"]
+        with args.csv.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=keys, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows([base, ctrl])
+        print(f"  written to {args.csv.relative_to(ROOT)}")
     return 0
 
 

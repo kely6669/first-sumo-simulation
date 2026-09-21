@@ -30,7 +30,6 @@ commas - reading it with the default separator silently yields one column.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -38,7 +37,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sumo_config import NET_FILE, ROOT, ROUTE_FILE, find_sumo_home  # noqa: E402
+from sumo_config import NET_FILE, ROOT, ROUTE_FILE  # noqa: E402
 
 
 # ---------------------------------------------------------------- readers
@@ -124,6 +123,23 @@ def lane_metrics(queues: pd.DataFrame) -> pd.DataFrame:
     return out[out["max_queue_m"] > 0]
 
 
+def queue_metrics(queues: pd.DataFrame) -> dict:
+    """Headline queue numbers for the whole network.
+
+    Averaged over (time, lane) rows, so an empty lane and a jammed lane each
+    contribute one value per second.  That answers "how queued is the network
+    on average", which is the right question when comparing two signal plans
+    on the same network.  It is *not* the average length of a queue.
+    """
+    if queues.empty:
+        return {}
+    return {
+        "mean_queue_m": round(queues["queue_length"].mean(), 2),
+        "p95_queue_m": round(queues["queue_length"].quantile(0.95), 2),
+        "max_queue_m": round(queues["queue_length"].max(), 2),
+    }
+
+
 # ---------------------------------------------------------------- plotting
 def make_plots(steps: pd.DataFrame, queues: pd.DataFrame, out_dir: Path) -> list[Path]:
     try:
@@ -202,7 +218,7 @@ def report_one(run_dir: Path, save: bool) -> dict:
     print(f"  summary  : {len(steps):>6} seconds")
     print(f"  queues   : {len(queues):>6} (time, lane) rows")
 
-    m = {**trip_metrics(trips), **network_metrics(steps)}
+    m = {**trip_metrics(trips), **network_metrics(steps), **queue_metrics(queues)}
     if not m:
         print("  nothing to analyse")
         return {}
@@ -232,42 +248,60 @@ def report_one(run_dir: Path, save: bool) -> dict:
         print(by_lane.head(8).to_string())
 
     if save:
-        pd.DataFrame([m]).to_csv(run_dir / "metrics.csv", index=False)
-        if not by_vtype.empty:
-            by_vtype.to_csv(run_dir / "by_vtype.csv")
-        if not by_lane.empty:
-            by_lane.to_csv(run_dir / "by_lane_queue.csv")
-        if not steps.empty:
-            steps.to_csv(run_dir / "summary_timeseries.csv", index=False)
-        print(f"\n  wrote metrics.csv, by_vtype.csv, by_lane_queue.csv, "
-              f"summary_timeseries.csv")
-        for p in make_plots(steps, queues, run_dir):
-            print(f"  wrote {p.name}")
+        # name each file explicitly instead of printing one summary line: the
+        # reader should not have to guess what was written where
+        written = []
+        for name, frame, kwargs in (
+            ("metrics.csv", pd.DataFrame([m]), {"index": False}),
+            ("by_vtype.csv", by_vtype, {}),
+            ("by_lane_queue.csv", by_lane, {}),
+            ("summary_timeseries.csv", steps, {"index": False}),
+        ):
+            if frame.empty:
+                continue
+            frame.to_csv(run_dir / name, **kwargs)
+            written.append(name)
+        print(f"\n  wrote into {run_dir}:")
+        for name in written:
+            print(f"    {name}")
+        for path in make_plots(steps, queues, run_dir):
+            print(f"    {path.name}")
     return m
 
 
-def run_simulation(run_dir: Path, end: int, route_file: Path) -> None:
-    """Produce the output files we are about to analyse."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    add = run_dir / "outputs.add.xml"
-    add.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
-<additional>
-    <edgeData id="edges" file="{run_dir / 'edgeData.xml'}" begin="0" end="{end}"
-              period="300" excludeEmpty="false"/>
-</additional>
-""", encoding="utf-8")
-    sumo = find_sumo_home() / "bin" / ("sumo.exe" if sys.platform == "win32" else "sumo")
-    cmd = [str(sumo), "-n", str(NET_FILE), "-r", str(route_file), "-a", str(add),
-           "--tripinfo-output", str(run_dir / "tripinfo.xml"),
-           "--summary-output", str(run_dir / "summary.xml"),
-           "--queue-output", str(run_dir / "queues.xml"),
-           "--no-step-log", "true", "--no-warnings", "true",
-           "--time-to-teleport", "-1", "--end", str(end)]
+def simulate(run_dir: Path, end: int, route_file: Path, net_file: Path) -> dict:
+    """Produce the output files we are about to analyse.
+
+    Both the network and the demand are arguments: analysing the hand-written
+    cross and analysing a real OSM extract are the same job, and only these
+    two paths differ.
+
+    The run itself is delegated to ``runner.run_simulation`` so that a run
+    started from here is the same kind of run as one started by
+    ``run_experiments.py`` - same command line, same output files, same
+    teleport setting.  This function used to build its own command line, and
+    the two copies drifted apart.
+
+    The import is deliberately inside the function.  Analysis does not need
+    TraCI, and importing runner at module level would drag SUMO's Python
+    bindings into every analysis, including the ones that only read files
+    that already exist.
+    """
+    from runner import run_simulation
+
     print(f"running simulation (route file: {route_file.name}) ...")
-    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-    if r.returncode != 0:
-        print(((r.stdout or "") + (r.stderr or ""))[-600:])
-        raise SystemExit("simulation failed")
+    return run_simulation(
+        run_dir,
+        strategy="fixed",     # this path does not touch the signal
+        duration=end,
+        net_file=net_file,
+        route_file=route_file,
+        # the route file carries the vehicles itself - this is the mode that
+        # works on a network this project did not build
+        drive_demand=False,
+        edge_data=True,
+        label="analyse",
+    )
 
 
 def compare(run_dirs: list[Path]) -> None:
@@ -300,6 +334,9 @@ def main() -> int:
     ap.add_argument("--route-file", type=Path, default=None,
                     help="route file to simulate; defaults to whichever exists "
                          "(flow.rou.xml preferred - simple.rou.xml has no vehicles)")
+    ap.add_argument("--net-file", type=Path, default=NET_FILE,
+                    help="network to simulate on; defaults to the hand-built "
+                         "cross, pass net/real.net.xml for an OSM network")
     ap.add_argument("--end", type=int, default=1800, help="seconds, with --simulate")
     ap.add_argument("--no-save", action="store_true",
                     help="print only, write no files")
@@ -316,7 +353,9 @@ def main() -> int:
         if route is None:
             # simple.rou.xml only defines types and routes - no vehicles - so
             # prefer a file that actually contains demand.
-            for cand in (ROOT / "net" / "flow.rou.xml", ROUTE_FILE):
+            for cand in (ROOT / "net" / "flow.rou.xml",
+                         ROOT / "net" / "real.net.rou.xml",
+                         ROUTE_FILE):
                 if cand.exists():
                     route = cand
                     break
@@ -324,7 +363,7 @@ def main() -> int:
             raise SystemExit(
                 "no route file with demand found. Pass --route-file, or copy\n"
                 "net/flow.rou.xml into the repo (see the README).")
-        run_simulation(args.run_dir, args.end, route)
+        simulate(args.run_dir, args.end, route, args.net_file)
         print()
     m = report_one(args.run_dir, save=not args.no_save)
     if not m:

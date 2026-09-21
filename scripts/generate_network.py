@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sumo_config import (  # noqa: E402
     ARM_LENGTH, CON_FILE, EDG_FILE, LANES, NET_DIR, NET_FILE, NOD_FILE, SPEED,
-    sumo_binary,
+    netconvert_binary,
 )
 
 CENTRE = ARM_LENGTH          # keeps nodes on a square
@@ -105,7 +105,7 @@ def main() -> int:
     print(f"wrote {NOD_FILE.name}, {EDG_FILE.name}, {CON_FILE.name}")
 
     cmd = [
-        str(sumo_binary().with_name("netconvert.exe" if sys.platform == "win32" else "netconvert")),
+        str(netconvert_binary()),
         "-n", str(NOD_FILE),
         "-e", str(EDG_FILE),
         "-x", str(CON_FILE),

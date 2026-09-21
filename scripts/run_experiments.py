@@ -1,16 +1,25 @@
-"""Run a batch of simulations: strategies x seeds x demand levels.
+"""Run a batch of simulations: strategies x demand levels x seeds.
 
 This is the experiment layer.  One simulation produces one set of output
 files; running many of them is what turns "a simulation" into "a result".
 
-    strategies : fixed-time, actuated (python), and you can add RL later
+    strategies : any name in control.CONTROLLERS (fixed, actuated, ...)
     seeds      : SUMO's --seed, which controls departure randomness
     demand     : a multiplier on the headways in sumo_config.ROUTES
 
-Everything lands in results/runs/ as CSV so pandas can read it directly:
+Each run gets its own directory, holding exactly the files a manual
+``sumo-gui`` run would produce::
 
-    results/runs/<strategy>_d<demand>_s<seed>_tripinfo.csv
-    results/runs/<strategy>_d<demand>_s<seed>_summary.csv
+    results/runs/<strategy>_d<demand>_s<seed>/tripinfo.xml
+                                             /summary.xml
+                                             /queues.xml
+                                             /sumo.log
+    results/index.csv      one row per run, listing the parameters
+
+The batch is atomic: results/runs/ is wiped at the start so the index and
+the directory can never disagree.  A half-replaced batch is worse than no
+batch, because every number in it looks equally trustworthy.  Pass --keep to
+add to an existing batch instead.
 
 Run:  python scripts/run_experiments.py [--runs 2] [--duration 900]
 """
@@ -19,155 +28,94 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
+import shutil
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sumo_config import (  # noqa: E402
-    ROOT, ROUTES, TLS_ID, find_sumo_home, setup_traci, sumo_binary,
-)
-
-setup_traci()
-import traci  # noqa: E402
-
-END_OF_EDGE = 285
-MIN_GREEN = 10
-MAX_GREEN = 45
-
-PHASE_LANES = {
-    0: ["rightE_A_0", "rightE_A_1", "leftW_A_0", "leftW_A_1"],
-    2: ["topS_A_0", "topS_A_1", "bottomN_A_0", "bottomN_A_1"],
-    6: ["rightE_A_0", "rightE_A_1", "leftW_A_0", "leftW_A_1"],
-}
-NEXT_GREEN = {0: 2, 2: 6, 6: 0}
+from control import CONTROLLERS  # noqa: E402
+from runner import run_simulation  # noqa: E402
+from sumo_config import ROOT  # noqa: E402
 
 RUNS_DIR = ROOT / "results" / "runs"
+INDEX = ROOT / "results" / "index.csv"
 
 
-def total_queue(lanes):
-    return sum(traci.lane.getLastStepHaltingNumber(l) for l in lanes)
+def tag_for(strategy: str, demand: float, seed: int) -> str:
+    """Directory name for one run.
+
+    The parameters are in the name so a directory can be identified without
+    opening index.csv, and ``demand`` is formatted to two decimals so 0.8 and
+    0.80 do not produce two different names for the same thing.
+    """
+    return f"{strategy}_d{demand:.2f}_s{seed}"
 
 
 def run_once(strategy: str, seed: int, demand: float, duration: int) -> dict:
-    """One simulation.  Returns the row that goes into the result table."""
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    tag = f"{strategy}_d{demand:.2f}_s{seed}"
-    trip_csv = RUNS_DIR / f"{tag}_tripinfo.csv"
-    summary_csv = RUNS_DIR / f"{tag}_summary.csv"
-
-    cmd = [
-        str(sumo_binary(gui=False)),
-        "-n", str(ROOT / "net" / "cross.net.xml"),
-        "-r", str(ROOT / "net" / "simple.rou.xml"),
-        "--output.format", "csv",           # <- makes pandas' life easy
-        "--tripinfo-output", str(trip_csv),
-        "--summary-output", str(summary_csv),
-        "--seed", str(seed),
-        "--no-step-log", "true",
-        "--no-warnings", "true",
-        "--time-to-teleport", "-1",         # never teleport: keeps results honest
-    ]
-    traci.start(cmd)
-
-    if strategy == "actuated":
-        traci.trafficlight.setPhase(TLS_ID, 0)
-        green_since = traci.simulation.getTime()
-
-    next_add = {i: 0.0 for i in range(len(ROUTES))}
-    veh_id = 0
-    switches = 0
-    t0 = time.time()
-
-    for _ in range(duration):
-        traci.simulationStep()
-        now = traci.simulation.getTime()
-
-        for i, (route, headway, _) in enumerate(ROUTES):
-            if now >= next_add[i]:
-                traci.vehicle.add(
-                    f"v{veh_id}", routeID=route,
-                    typeID="bus" if veh_id % 10 == 0 else "car",
-                    depart=str(now), departLane="best", departSpeed="max",
-                )
-                next_add[i] = now + headway * demand
-                veh_id += 1
-
-        for vid in traci.vehicle.getIDList():
-            if (traci.vehicle.getRoadID(vid).startswith("A_")
-                    and traci.vehicle.getLanePosition(vid) > END_OF_EDGE):
-                traci.vehicle.remove(vid)
-
-        if strategy == "actuated":
-            phase = traci.trafficlight.getPhase(TLS_ID)
-            if phase in PHASE_LANES:
-                elapsed = now - green_since
-                served = total_queue(PHASE_LANES[phase])
-                waiting = total_queue(PHASE_LANES[NEXT_GREEN[phase]])
-                if elapsed >= MAX_GREEN or (elapsed >= MIN_GREEN
-                                            and served == 0 and waiting > 0):
-                    traci.trafficlight.setPhase(TLS_ID, NEXT_GREEN[phase])
-                    green_since = now
-                    switches += 1
-
-    left = traci.vehicle.getIDCount()
-    traci.close()
-
-    return {
-        "strategy": strategy,
-        "seed": seed,
-        "demand": demand,
-        "duration": duration,
-        "inserted": veh_id,
-        "switches": switches,
-        "still_in_network": left,
-        "wall_clock_s": round(time.time() - t0, 1),
-        "tripinfo_file": trip_csv.name,
-        "summary_file": summary_csv.name,
-    }
+    """One simulation.  Returns the row that goes into results/index.csv."""
+    tag = tag_for(strategy, demand, seed)
+    row = run_simulation(RUNS_DIR / tag, strategy=strategy, seed=seed,
+                         demand=demand, duration=duration, label=tag)
+    # store the directory relative to the repo so index.csv survives being
+    # moved, cloned or opened on another machine
+    row["run_dir"] = str(Path(row["run_dir"]).relative_to(ROOT))
+    row["tag"] = tag
+    return row
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", type=int, default=2, help="seeds per combination")
     ap.add_argument("--duration", type=int, default=900)
     ap.add_argument("--demands", type=float, nargs="+", default=[1.0],
                     help="headway multipliers, e.g. 0.8 1.0 1.2")
-    ap.add_argument("--strategies", nargs="+",
-                    default=["fixed", "actuated"],
-                    choices=["fixed", "actuated"])
+    ap.add_argument("--strategies", nargs="+", default=["fixed", "actuated"],
+                    choices=sorted(CONTROLLERS))
+    ap.add_argument("--keep", action="store_true",
+                    help="do not wipe results/runs/ first (results may then "
+                         "mix incompatible batches)")
     args = ap.parse_args()
 
     combos = [(s, seed, d)
               for s in args.strategies
-              for d in args.demands
+              for d in sorted(args.demands)
               for seed in range(args.runs)]
-    print(f"running {len(combos)} simulations "
-          f"({len(args.strategies)} strategies x {len(args.demands)} demand "
-          f"levels x {args.runs} seeds), {args.duration} s each")
+
+    print("=" * 74)
+    print("running simulations")
+    print("=" * 74)
+    print(f"  {len(combos)} runs = {len(args.strategies)} strategies "
+          f"x {len(args.demands)} demand levels x {args.runs} seeds, "
+          f"{args.duration} s each")
+
+    if args.keep:
+        print("  --keep: adding to the existing results/runs/")
+    elif RUNS_DIR.exists():
+        stale = sum(1 for _ in RUNS_DIR.iterdir())
+        shutil.rmtree(RUNS_DIR)
+        print(f"  cleared results/runs/ ({stale} old entr(ies) removed)")
     print()
 
     rows = []
     for i, (strategy, seed, demand) in enumerate(combos, 1):
         row = run_once(strategy, seed, demand, args.duration)
         rows.append(row)
-        print(f"  [{i:2d}/{len(combos)}] {strategy:8s} seed={seed} "
-              f"demand={demand:.2f}  inserted={row['inserted']:4d}  "
-              f"left={row['still_in_network']:3d}  "
-              f"switches={row['switches']:3d}  ({row['wall_clock_s']}s)")
+        print(f"  [{i:2d}/{len(combos)}] {tag_for(strategy, demand, seed):22s} "
+              f"inserted={row['inserted']:4d}  completed={row['completed']:4d}  "
+              f"left={row['still_in_network']:3d}  switches={row['switches']:3d}"
+              f"  ({row['wall_clock_s']}s)")
 
-    index = ROOT / "results" / "index.csv"
-    index.parent.mkdir(parents=True, exist_ok=True)
-    with index.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
+    INDEX.parent.mkdir(parents=True, exist_ok=True)
+    with INDEX.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
-    print(f"\nwrote {index.relative_to(ROOT)}  ({len(rows)} runs)")
-    print(f"raw outputs in results/runs/  "
-          f"({len(list(RUNS_DIR.glob('*.csv')))} files)")
-    print("\nnext: python scripts/analyse_results.py")
+    print(f"\nwrote {INDEX.relative_to(ROOT)}  ({len(rows)} runs)")
+    print(f"raw output in results/runs/  "
+          f"({sum(1 for _ in RUNS_DIR.rglob('*.xml'))} xml files)")
+    print("\nnext: python scripts/analyse_results.py --save")
     return 0
 
 

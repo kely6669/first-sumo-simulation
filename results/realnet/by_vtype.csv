@@ -1,5 +1,4 @@
 ,duration,duration,waitingTime,waitingTime,timeLoss,timeLoss
 ,count,mean,count,mean,count,mean
 vType,,,,,,
-bus,40,65.8,40,6.9,40,23.0
-car,1257,72.8,1257,18.8,1257,27.6
+DEFAULT_VEHTYPE,384,244.1,384,49.6,384,83.5

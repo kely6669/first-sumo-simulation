@@ -1,0 +1,19 @@
+# Flake8 configuration.
+#
+# Line length: PEP 8 says "Limit all lines to a maximum of 79 characters" but
+# the same paragraph continues: "Some teams strongly prefer a longer line
+# length of up to 99. ... The convention is to prefer the rule within a
+# project."  The reference formatter (black) uses 88, flake8's own default is
+# 79.  This project uses 99, the widest value PEP 8 still endorses, because
+# the scripts build long external command lines (SUMO binaries plus a dozen
+# path arguments) and wrapping those below 79 hurts readability without
+# helping anyone.
+#
+# Everything else is checked at the defaults, so no rule is silently disabled.
+[flake8]
+max-line-length = 99
+extend-exclude =
+    .git,
+    __pycache__,
+    net,
+    results

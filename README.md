@@ -1,12 +1,70 @@
 # first-sumo-simulation
 
-> 用 Python 连上 SUMO，亲手搭一个十字路口，然后实时控制它的红绿灯。
+> 用 Python 通过 TraCI 控制 SUMO 的红绿灯，跑完的数据用 pandas 清洗出图。
 
-这是我写的第一个 SUMO 项目：一个用纯 XML 搭起来的十字路口，
-从路网生成、运行中加车、到信号控制，全部由 Python 通过 TraCI 驱动。
+一条流水线，三站：**生成路网 → Python 控制仿真 → 清洗出图**。
 
-如果你是第一次接触 SUMO / TraCI，这个项目就是为你准备的——
-三个脚本由浅入深，每个都能独立跑通，踩过的坑也都记在下面了。
+自带一个手写的十字路口，clone 下来就能跑。**换成你自己的地方也是一条命令**——
+喂它一个 OpenStreetMap 的 `.osm` 文件，它编译路网、生成车流、跑仿真、出图表。
+
+信号控制器**不认识任何一条具体车道**：启动时它自己去问 SUMO，这个路口有几个信号灯、
+每个几套相位、哪套相位给哪些车道放绿灯。所以它能用在任何有信号灯的路网上。
+
+如果你是第一次接触 SUMO / TraCI，`1_connect.py` → `2_add_vehicles.py` →
+`3_signal_control.py` 三个脚本由浅入深，每个都能独立跑通。踩过的坑都记在下面。
+
+---
+
+## 🌍 换成你自己的地方
+
+这是这个仓库最实用的部分。三步：
+
+```bash
+# 1) 用你自己的地图建路网（--trips 顺便生成车流）
+python scripts/build_from_osm.py --osm 你的地图.osm --trips
+
+# 2) 跑仿真 + 出图（这一条命令全都干了）
+python scripts/analyse_run.py --run-dir results/mine --simulate \
+       --net-file net/你的地图.net.xml --route-file net/你的地图.rou.xml --end 3600
+
+# 3) 想看画面就打开 SUMO 界面
+sumo-gui -n net/你的地图.net.xml -r net/你的地图.rou.xml
+```
+
+**你的 `.osm` 文件从哪来？** 三种都行，脚本不关心：
+
+| 来源 | 怎么做 |
+|---|---|
+| 网页导出 | [openstreetmap.org/export](https://www.openstreetmap.org/export) 框选区域 → 导出 |
+| 命令行下载 | `python scripts/build_from_osm.py --bbox 116.47,39.87,116.49,39.88 --trips` |
+| 现成数据包 | [Geofabrik](https://download.geofabrik.de/) 下载某个省/国家，再裁剪 |
+
+> ⚠️ **在中国大陆，前两种方式基本都会失败。** 不是脚本的问题，是网络：
+> `www.openstreetmap.org` 会被 DNS 污染（实测解析到 `157.240.0.35`，那是 Facebook 的 IP），
+> 几个 Overpass 镜像要么连不上、要么**返回 200 加一份格式合法的空文档**——
+> 这种"成功但为空"最坑，所以脚本会数一下文件里到底有没有路，没有就明说失败了。
+>
+> 用 VPN，或者让有网络的人帮你导出一份 `.osm` 发过来。**这条路 `--osm` 是完全离线的**，
+> 只要文件在本地就能跑。
+
+### 你的路网上也能控信号
+
+`build_from_osm.py` 编译出来的路网，用 `--tls.guess` 让 netconvert 自己判断哪里该装红绿灯。
+装好之后，感应控制器可以直接用：
+
+```
+python scripts/build_from_osm.py --osm 你的地图.osm --trips   # 编译（含信号灯）
+# 然后在 Python 里：
+from runner import run_simulation
+run_simulation("results/mine", strategy="actuated",
+               net_file="net/你的地图.net.xml",
+               route_file="net/你的地图.rou.xml",
+               drive_demand=False)      # 车流来自 .rou.xml，不由 Python 插
+```
+
+实测量级：一个 **202 个信号灯** 的真实城市路网，控制器 1.2 秒读完全部相位方案，
+每仿真秒管 200 个路口。如果路网**一个信号灯都没有**，它会明确拒绝并告诉你原因，
+而不是假装在工作。
 
 ---
 
@@ -33,13 +91,80 @@ SUMO 是一个开源的交通仿真软件，它自带的固定配时红绿灯很
 | **`2_add_vehicles.py`** | 仿真跑着的时候往里塞车 |
 | **`3_signal_control.py`** | 用 Python 代替固定配时，接管红绿灯 |
 
-除了这三个，还有一套**做实验**用的脚本：
+---
+
+## 🔧 一条流水线，三站
+
+整个仓库就是一条线，三站之间**只通过文件连接**：
+
+```
+① 生成路网                  ② Python 通过 TraCI 控制 SUMO        ③ 清洗出图
+   generate_network.py         runner.run_simulation()             analyse_run.py
+   build_from_osm.py           ├─ control.py   决定红绿灯          analyse_results.py
+                               └─ demand.py    决定发车 / 删车
+        ↓                              ↓                                ↓
+   net/cross.net.xml            <run>/tripinfo.xml               metrics.csv
+   net/real.net.xml             <run>/summary.xml                by_lane_queue.csv
+                                <run>/queues.xml                 plot_*.png
+```
+
+第 ② 站写出来的 XML，和你手动 `sumo-gui` 跑出来的**一模一样**。
+所以第 ③ 站不关心是谁开的车——人点的"播放"和 Python 驱动的仿真，它一视同仁。
+
+### 第 ① 站 · 生成路网
+
+| 脚本 | 产出 | 是什么 |
+|---|---|---|
+| `generate_network.py` | `net/cross.net.xml` | 手写 XML 的十字路口：8 条路 / 12 个连接 / 1 个信号灯 |
+| `build_from_osm.py` | `net/real.net.xml` | 真实地图（OpenStreetMap），加 `--trips` 还能生成车流 |
+
+> 📌 **编译出来的 `.net.xml` 不进仓库。**
+>
+> `net/cross.net.xml` 是**编译产物**：它由手写的 `net/cross.{nod,edg,con}.xml`
+> 编译而来；`net/real.net.xml` 同理，来自 OpenStreetMap。
+> 两个都能随时重建，而且 netconvert 每次编译都会往里写一个新的生成时间戳，
+> 放进 git 只会制造无意义的 diff。
+>
+> **所以仓库里存的是"输入"，不是"输出"。** clone 下来只有那三个手写 XML。
+>
+> 不用担心少文件——**任何需要路网的脚本都会先自己检查，缺了就现编译**：
+>
+> ```
+> $ python scripts/1_connect.py
+> cross.net.xml is missing - compiling it from the hand-written XML
+>   $ python .../scripts/generate_network.py
+> ```
+>
+> 它是**明说**自己在干什么，不是偷偷补一个文件。
+
+
+### 第 ② 站 · Python 控制 SUMO
 
 | 脚本 | 干什么 |
 |---|---|
-| **`build_from_osm.py`** | **用真实地图建路网**（OpenStreetMap） |
-| `run_experiments.py` | 批量跑：策略 × 需求 × 随机种子 |
-| `analyse_results.py` | 用 pandas 汇总所有结果，出对比表 |
+| `1_connect.py` | 只连不干活，证明通道是通的 |
+| `2_add_vehicles.py` | 运行时加车 + 把跑完的车删掉 |
+| `3_signal_control.py` | 接管红绿灯，`--compare` 跟固定配时对比 |
+| `run_experiments.py` | 批量跑：策略 × 需求档位 × 随机种子 |
+
+三个共享模块，每样东西**只写一份**：
+
+| 模块 | 管什么 |
+|---|---|
+| `control.py` | **决定**红绿灯。`fixed` / `actuated` 都在这里，加新策略只要加一个类 |
+| `demand.py` | **决定**车流。按时刻表加车、把越过边界的车删掉 |
+| `runner.py` | 把上面两件事和 SUMO 串起来，跑一次仿真。所有仿真都走这个入口 |
+
+### 第 ③ 站 · 清洗出图
+
+| 脚本 | 吃谁的数据 | 产出 |
+|---|---|---|
+| `analyse_run.py` | 一次仿真 | 指标表 + 4 个 CSV + 2 张图 |
+| `analyse_results.py` | 一批仿真 | 策略对比表 + 对比图 |
+
+两个脚本**共用同一套读取器**——`load_run` / `trip_metrics` / `network_metrics` /
+`queue_metrics` 都定义在 `analyse_run.py` 里，`analyse_results.py` 直接 import。
+所以"平均等待时间"只有一处定义，不会两边各算一个数。
 
 ---
 
@@ -187,6 +312,42 @@ collisions           0   ← 必须为 0
 
 **看这张图就懂什么叫"健康的路口"**：`plot_queue.png` 里排队呈**锯齿状周期波动**——红灯时累积、绿灯时消散，**而且不逐周期累积**。如果锯齿的谷底越来越高，说明需求超过通行能力了。
 
+### 一批仿真怎么分析
+
+单次跑出来的数字只是**一次抽签**。要下结论，得跑一批：
+
+```bash
+python scripts/run_experiments.py --runs 2 --duration 900 --demands 0.8 1.0 1.2
+python scripts/analyse_results.py --save
+```
+
+第一条命令跑 2 策略 × 3 档需求 × 2 个随机种子 = **12 次仿真**，
+每次一个目录，装的是和手动跑完全一样的 XML。第二条命令把它们汇总。
+
+`results/runs/` 是**原子**的：每次批量实验会先清空它。
+一个换了一半的实验批次，比没有批次更糟——因为里面每个数字看起来都一样可信。
+
+汇总里最有价值的是最后那个 **spread check**：
+
+```
+scale 0.80: actuated=  15.5 vs fixed=  24.2  diff=  8.7  spread=  1.4  -> 差异是真的
+scale 1.00: actuated=  14.4 vs fixed=  18.6  diff=  4.2  spread=  0.2  -> 差异是真的
+scale 1.20: actuated=  13.7 vs fixed=  19.4  diff=  5.7  spread=  0.4  -> 差异是真的
+```
+
+它比的是**"两个策略的差"**和**"随机种子造成的波动"**。
+只有差大于波动时才敢说结论成立；只要有一行波动比差大，
+脚本就会老老实实写"不成立，需要更多种子"，而不是硬报一个"我的控制器差了 2.5%"。
+
+> 📌 **两个种子的实验不叫结论，叫抽样。** 这个检查就是防止你自己骗自己。
+>
+> 但也要知道它的局限：**它只能发现"样本不够"，发现不了"代码根本没生效"。**
+> 坑三里那个假结论，spread check 一路放行，因为它确实可复现——
+> 见下文，那是这个仓库里最值钱的一个教训。
+
+它还会出 `results/plot_strategies.png`：横轴是需求强度，纵轴是平均等待和平均排队，
+误差棒就是种子波动。**误差棒比两条线之间的距离还长的时候，别看线，看误差棒。**
+
 ---
 
 ## 🕳️ 我踩过的三个坑
@@ -198,13 +359,16 @@ collisions           0   ← 必须为 0
 路网边界是死胡同，车跑完路线就停在原地不动了。
 我第一版跑了 600 秒、加进去 400 辆车，**结果 0 辆完成、111 辆卡在网上**。
 
-解决办法：自己动手删。
+解决办法：自己动手删。这段逻辑现在住在 `scripts/demand.py` 里：
 
 ```python
-if traci.vehicle.getRoadID(v).startswith("A_") and \
-   traci.vehicle.getLanePosition(v) > 285:
+on_exit = traci.vehicle.getRoadID(v).startswith("A_")
+if on_exit and traci.vehicle.getLanePosition(v) > 285:   # 边总长 300 米
     traci.vehicle.remove(v)
 ```
+
+`2_add_vehicles.py`、`3_signal_control.py`、`run_experiments.py` 用的都是**这一份**。
+以前它被抄了三遍，改一个 bug 得改三个地方——这正是"每个东西只写一份"的意义。
 
 ### 坑二：车流量不能超过路口的通行能力
 
@@ -254,26 +418,109 @@ if traci.vehicle.getRoadID(v).startswith("A_") and \
 > 📌 **所以排查"排队一直涨"要看两处**：进口道的信号能力、**出口车道的能力**。
 > 单车道出口的实际通行能力大约 700~900 辆/小时（受信号影响），超过就会堵。
 
-### 坑三：我的"智能"控制器反而不如固定配时 😅
+### 坑三：我的控制器看着在工作，其实一直在跟固定配时抢方向盘 🕵️
 
-跑 `3_signal_control.py --compare` 的实测结果：
+这个坑比"我的算法提升了 X%"有价值得多，因为它是一个**测量错误**——而且它一开始伪装成了一个漂亮的负结果。
 
-| 指标 | 固定配时 | 我的感应控制 |
-|---|---|---|
-| 平均排队 | **5.7** | 7.8 |
-| 最大排队 | **13** | 20 |
-| 通过车辆 | **72** | 68 |
-| 切换次数 | 0 | 16 |
+#### 第一幕：一个看起来很诚实的负结果
 
-**我的控制器差了 36%。** 而且连跑 5 次结果一模一样——这套设置是确定性的（发车计划固定、控制器无随机成分），所以不是运气差，是真的差。
+我写完感应控制（gap-out），跑对比，结果是它比固定配时**差 47%**：
 
-**为什么会这样？** 我的"间隙中断"策略太激进了：最小绿只有 10 秒、黄灯 3 秒，频繁切换让每个周期浪费的时间变多。固定配时那个 24 秒的长绿反而更高效。
+| 指标 | 固定配时 | 我的感应控制 | 变化 |
+|---|---|---|---|
+| 平均排队 | **16.18 m** | 25.37 m | +56.8% |
+| 平均等待 | **18.50 s** | 27.30 s | +47.6% |
+| 相位切换 | 0 | 23 | — |
 
-**我故意把这个负结果留着**，因为我觉得它比"我的算法提升了 30%"更有意思：
+我当时还挺满意：**"看，我把负结果留下来了，我很诚实。"**
+而且连跑几次数字一模一样——确定性的，不是运气。
 
-> **控制器不是越智能越好，得在具体场景下试了才知道。**
+#### 第二幕：为了支持别人的路网，我把控制器改成通用的
 
-想改进的话，几个方向可以试试：把最小绿从 10 提到 20、切换前先确认对面真有车、或者上强化学习（看 [sumo-rl](https://github.com/LucasAlegre/sumo-rl)）。
+原来的控制器把车道名写死了（`rightE_A_0` 这些）。这在别人的路网上会**静默失效**：
+读不到那些车道 → 队列永远是 0 → **控制器以为路是空的**，什么也不做，还不报错。
+
+所以我改成启动时去问 SUMO：`getControlledLinks()` 拿到每条受控连接，
+`getAllProgramLogics()` 拿到相位表，然后自己算出每个相位给哪些车道放绿灯。
+
+改完先做探测。读出来的东西让我停住了：
+
+```
+phase 0: 24.0s  rrgGrrGGgGrr   绿灯位=[2,3,6,7,8,9]
+phase 1:  3.0s  rryGrryyyGrr   绿灯位=[3,9]      <- 这是黄灯
+phase 2: 24.0s  rrrGGgrrrGGg   绿灯位=[3,4,5,9,10,11]
+phase 4:  6.0s  rrrrrGrrrrrG   绿灯位=[5,11]     <- 旧代码完全漏掉了这个相位
+```
+
+**然后我试了一下 `setPhase()` 到底管不管用：**
+
+```
+setPhase("A", 2)          # 跳到相位 2
+t=25s 相位 2 -> 3         # SUMO 自己往下走了
+t=28s 相位 3 -> 4
+t=34s 相位 4 -> 5
+```
+
+**`setPhase()` 只是"跳"过去，跳完 SUMO 照样跑自己的程序。**
+
+也就是说，我那个"感应控制器"从来**没有真正接管过信号灯**。它只是在 SUMO 已经配好的固定配时上**随机插队**。
+那 47% 不是"我的算法差"，是"我在破坏一个本来就配好的方案"。
+
+#### 第三幕：那怎么才能真正接管
+
+继续探测，答案是 `setPhase` **加上** `setPhaseDuration`：
+
+```
+setPhase("A", 2) + setPhaseDuration("A", 1000)
+200 步后仍是相位 2        -> 成功按住
+```
+
+#### 第四幕：修好之后，结论翻了个个儿
+
+| 指标 | 固定配时 | 感应控制 | 变化 |
+|---|---|---|---|
+| 平均排队 | 16.18 m | **13.21 m** | **−18.4%** |
+| 平均等待 | 18.50 s | **14.40 s** | **−22%** |
+| 相位切换 | 0 | 11 | — |
+
+而且三种需求档位全赢，spread check 全部判定"差异是真的"：
+
+```
+scale 0.80: actuated= 15.5 vs fixed= 24.2  diff= 8.7  spread= 1.4  -> 真实
+scale 1.00: actuated= 14.4 vs fixed= 18.6  diff= 4.2  spread= 0.2  -> 真实
+scale 1.20: actuated= 13.7 vs fixed= 19.4  diff= 5.7  spread= 0.4  -> 真实
+```
+
+> 📌 **第一版那个"负结果"是假的。** 它之所以看起来像真的，恰恰是因为**它可复现**——
+> 同一套设置跑多少次都是 47%。
+>
+> **可复现的错误和可复现的结论，在结果表里长得一模一样。**
+> 分辨它们的办法不是多跑几次，是**去看你的代码到底做了什么**。
+> 我当时差点就把这个假结论写成"控制器不是越智能越好"的人生感悟了。
+
+#### 第五幕：连 gap-out 的判定条件也是错的
+
+真正的相位表一读出来就发现：phase 0 和 phase 2 **共享** `rightE_A_0`、`leftW_A_0`
+两条车道（主干道直行在两个相位里都放绿）。
+
+于是"当前绿灯方向全空了"这个条件几乎永远不成立——**共享车道一空，两边的计数同时归零**。
+实测 600 秒里成立 **0 次**：控制器一次都不切换，安安静静什么都不做，
+而结果表上它和固定配时**一模一样**，看起来"没有副作用"。
+
+改成只统计**真正会换状态**的车道——会失去绿灯的、会获得绿灯的，共享车道两边都不算：
+
+```python
+here, there = set(lanes[phase]), set(lanes[next_green[phase]])
+losing  = here - there      # 切了会失去绿灯
+gaining = there - here      # 切了会获得绿灯
+```
+
+同一段 600 秒里成立 **9 次**。README 里那个"最小绿 10 秒"的配置，
+现在是真的在起作用了。
+
+想继续改进的话，几个方向：把 `MIN_GREEN` 从 10 提到 20 看能不能更好、
+把判定换成"压力比较"（比较两个方向的排队差，而不是布尔条件）、
+或者上强化学习（看 [sumo-rl](https://github.com/LucasAlegre/sumo-rl)）。
 
 ---
 
@@ -285,29 +532,83 @@ if traci.vehicle.getRoadID(v).startswith("A_") and \
 LANES = 2            # 每个进口几车道
 ARM_LENGTH = 300     # 路口到边界多远（米）
 SPEED = 13.9         # 限速 m/s
+ROUTES = [...]       # 每个方向的车流量（headway 秒）
 ```
 
-控制器参数在 `scripts/3_signal_control.py`：
+控制器参数在 `scripts/control.py`：
 
 ```python
-MIN_GREEN = 10       # 最小绿灯
-MAX_GREEN = 45       # 最大绿灯
+MIN_GREEN = 10       # 最小绿灯，绝不低于这个
+MAX_GREEN = 45       # 最大绿灯，超过就强制切换
 ```
+
+> 📌 **关于 `MAX_GREEN` 的一个诚实说明**：控制器**只能把绿灯提前结束，
+> 不能把它延长**。所以 `MAX_GREEN` 只在"路网自己的绿灯比它还长"时才起作用。
+> 十字路口的每个绿灯都是 24 秒（< 45），所以在这个路网上 max-out **永远不会触发**——
+> 它已经由路网自己的配时管住了。
+>
+> 为什么不做"延长"？因为**延长会把横向饿死**。十字路口有个 phase 4 只有 6 秒，
+> 如果控制器能把它按住 45 秒，另外三个方向就得干等。**"提前结束"不会饿死任何人，
+> 所以控制器只拿这一项权力。**
+
+**控制器不知道任何一条具体车道。** 它启动时自己去问 SUMO：
+
+```python
+links  = traci.trafficlight.getControlledLinks(tls)      # 每条受控连接
+program = traci.trafficlight.getAllProgramLogics(tls)[0] # 相位表
+# state[i] in "Gg"  ->  第 i 条连接是绿灯
+# 含 'y' 的相位是过渡相位，不能停
+```
+
+所以同一个 `actuated` 能直接用在别人的路网上。实测量级：**202 个信号灯**的真实城市路网，
+1.2 秒读完全部方案。路网一个信号灯都没有时，它会明确拒绝并说明原因。
+
+**想加一个自己的控制器**？只要在 `control.py` 里写一个类，加进 `CONTROLLERS` 就行：
+
+```python
+class MyController(Controller):
+    name = "mine"
+    def reset(self):          # SUMO 启动后调用一次
+        ...                   # 在这里 discover_plans() 读相位表
+    def step(self, now):      # 每个仿真秒调用一次
+        ...                   # 想切就 setPhase(...) + setPhaseDuration(...)
+
+CONTROLLERS["mine"] = MyController
+```
+
+然后 `python scripts/run_experiments.py --strategies fixed mine` 就能和固定配时对比了。
+**其它文件一行都不用改**——把 `step()` 里换成强化学习、遗传算法或模糊控制，就是一个研究贡献。
+
+> ⚠️ 自己写控制器时记住坑三的教训：**`setPhase()` 单独用是不管用的。**
+> 它只是跳过去，SUMO 接着跑自己的程序。要真正接管，必须**同时设置相位时长**：
+>
+> ```python
+> traci.trafficlight.setPhase(tls, index)
+> traci.trafficlight.setPhaseDuration(tls, seconds)   # 少了这行就不是控制
+> ```
+>
+> 这个坑我踩过，代价是一个假结论。见下面的坑三。
 
 改完直接重跑就行，路网会自动重新生成。几个值得试的小实验：
 
-1. 最小绿改成 20，看我的控制器能不能赢过固定配时
+1. 最小绿从 10 改成 20，看控制器是变好还是变差（现在它是赢的，赢了 −18%）
 2. 车道数改成 1，看通行能力掉多少
 3. 发车间隔全部减半，看什么时候开始堵
+4. 把 `--runs` 提到 10，看 spread check 的结论会不会变
+5. 拿一份**你自己城市**的 `.osm` 跑一遍，看控制器的结论还成不成立
 
 ---
 
 ## 📝 还没做的（欢迎来补）
 
+- [x] 多种子重复 + 波动检查（`run_experiments.py` + spread check）
+- [x] 控制器和具体路网解耦，能用在别人的路网上（`control.discover_plans`）
+- [x] 一个仿真入口，两种车流来源（`runner.run_simulation` 的 `drive_demand`）
 - [ ] 控制器只看排队长度，没考虑等待时间和延误
-- [ ] 只跑单次，没有多种子重复 + 置信区间
-- [ ] 单路口，没做相邻路口的协调（绿波带）
+- [ ] gap-out 是布尔条件，还没换成"压力比较"（比较两个方向的排队差）
+- [ ] 只管单点，没做相邻路口的协调（绿波带）；多路口时每步要查几百次 TraCI，能再快
 - [ ] 车流是合成的，没做过标定
+- [ ] spread check 只是"差 vs 波动"的粗判，还没接正式的统计检验（Mann-Whitney / t 检验）
 
 ---
 

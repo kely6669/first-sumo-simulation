@@ -1,10 +1,15 @@
-"""Aggregate every simulation run into a comparison table.
+"""Aggregate every simulation run into a comparison table, and plot it.
 
-This is where pandas earns its keep.  Running 120 simulations produces 240
-CSV files; nobody reads those by hand.  The job is:
+This is where pandas earns its keep.  Twenty-four simulations produce
+seventy-two XML files; nobody reads those by hand.  The job is:
 
-    read every run  ->  clean  ->  aggregate per run  ->  group by strategy
-                    ->  mean +/- spread  ->  one table you can put in a report
+    read every run  ->  clean  ->  one row per run  ->  group by strategy
+                    ->  mean +/- spread  ->  a table and a figure
+
+The readers are imported from ``analyse_run``; this file does not have its
+own copy.  That is deliberate.  When the single-run analysis was reading XML
+and this one was reading semicolon-separated CSV, the two could - and did -
+disagree about what "mean waiting time" meant.
 
 Run:  python scripts/analyse_results.py [--save]
 """
@@ -18,14 +23,17 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import analyse_run as single  # noqa: E402
 from sumo_config import ROOT  # noqa: E402
 
-RUNS_DIR = ROOT / "results" / "runs"
 INDEX = ROOT / "results" / "index.csv"
+SUMMARY_CSV = ROOT / "results" / "summary.csv"
+FIGURE = ROOT / "results" / "plot_strategies.png"
 
-# SUMO writes "csv" files separated by semicolons, not commas.  Reading with
-# the default separator silently gives you a single column of text.
-SEP = ";"
+#: Metrics compared between strategies.  Only the ones that exist are used.
+COMPARED = ["mean_waiting_s", "mean_duration_s", "mean_timeloss_s",
+            "mean_queue_m", "max_queue_m", "mean_running", "arrived",
+            "trips_completed"]
 
 
 def load_index() -> pd.DataFrame:
@@ -39,76 +47,159 @@ def load_index() -> pd.DataFrame:
     return df
 
 
-def load_tripinfos(index: pd.DataFrame) -> pd.DataFrame:
-    """One row per run, summarising all the trips in that run."""
-    rows = []
-    missing = []
-    for r in index.itertuples():
-        p = RUNS_DIR / r.tripinfo_file
-        if not p.exists():
-            missing.append(r.tripinfo_file)
+def collect(index: pd.DataFrame) -> pd.DataFrame:
+    """Clean the runs and reduce each one to a single row of metrics."""
+    rows, missing = [], []
+    for record in index.itertuples():
+        run_dir = ROOT / record.run_dir
+        if not run_dir.is_dir():
+            missing.append(f"{record.tag} (directory gone)")
             continue
-        t = pd.read_csv(p, sep=SEP)
-        if t.empty:
-            missing.append(r.tripinfo_file)
+        data = single.load_run(run_dir)
+        if data["trips"].empty and data["steps"].empty:
+            missing.append(f"{record.tag} (no usable output)")
             continue
         rows.append({
-            "strategy": r.strategy,
-            "headway_scale": r.demand,
-            "seed": r.seed,
-            "trips": len(t),
-            "mean_duration": t["duration"].mean(),
-            "mean_waiting": t["tripinfo_waitingTime"].mean(),
-            "mean_timeloss": t["tripinfo_timeLoss"].mean(),
-            "mean_stoptime": t["tripinfo_stopTime"].mean(),
-            "p95_duration": t["duration"].quantile(0.95),
-            "max_waiting": t["tripinfo_waitingTime"].max(),
+            "strategy": record.strategy,
+            "demand": record.demand,
+            "seed": record.seed,
+            "tag": record.tag,
+            # one shared definition of every metric, from analyse_run
+            **single.trip_metrics(data["trips"]),
+            **single.network_metrics(data["steps"]),
+            **single.queue_metrics(data["queues"]),
         })
     if missing:
-        print(f"    [!] {len(missing)} run(s) had no usable tripinfo: "
+        print(f"    [!] dropped {len(missing)} run(s) with no usable data: "
               f"{missing[:3]}")
     return pd.DataFrame(rows)
 
 
-def load_summaries(index: pd.DataFrame) -> pd.DataFrame:
-    """One row per run, from the per-second summary time series.
+def quality_gate(df: pd.DataFrame) -> list[str]:
+    """Data-quality checks that decide whether the table may be trusted."""
+    problems = []
+    if df.empty:
+        return ["every run was dropped - nothing to report"]
+    for column, limit, why in (
+        ("teleports", 0, "vehicles were moved by SUMO: travel times distorted"),
+        ("collisions", 0, "vehicles overlapped: the network is wrong"),
+    ):
+        if column in df.columns:
+            bad = df[df[column] > limit]
+            if len(bad):
+                problems.append(f"{len(bad)} run(s) with {column} > {limit} "
+                                f"({why}): {list(bad['tag'])[:3]}")
+    nulls = int(df.isna().sum().sum())
+    if nulls:
+        problems.append(f"{nulls} missing value(s) in the aggregated table")
+    short = df[df["duration_s"] < 60] if "duration_s" in df.columns else df.iloc[:0]
+    if len(short):
+        problems.append(f"{len(short)} run(s) shorter than the 60 s warm-up")
+    return problems
 
-    Column names are prefixed with `net_` so they cannot collide with the
-    tripinfo columns when the two tables are merged.
+
+def compare(df: pd.DataFrame) -> None:
+    """Print mean +/- std per strategy, then the spread check."""
+    print()
+    print("=" * 74)
+    print("[4] strategy comparison  (mean +/- std over seeds)")
+    print("=" * 74)
+    present = [m for m in COMPARED if m in df.columns]
+    for demand in sorted(df["demand"].unique()):
+        label = "higher demand" if demand < 1 else (
+            "lower demand" if demand > 1 else "baseline demand")
+        print(f"\n--- headway scale {demand:.2f}  ({label}) ---")
+        sub = df[df["demand"] == demand]
+        for metric in present:
+            line = f"  {metric:16s}"
+            for strategy in sorted(sub["strategy"].unique()):
+                values = sub[sub["strategy"] == strategy][metric]
+                mean = values.mean()
+                spread = values.std(ddof=1) if len(values) > 1 else 0.0
+                line += f"  {strategy}={mean:8.1f}±{spread:5.1f}"
+            print(line)
+
+
+def spread_check(df: pd.DataFrame) -> None:
+    """Is the difference between strategies bigger than the seed noise?
+
+    This is the check that stops a two-seed experiment from being reported as
+    a finding.  It compares the gap between strategies against the scatter
+    across seeds; when the scatter is the bigger of the two, the honest
+    verdict is "not enough runs", not "strategy A wins".
     """
-    rows = []
-    for r in index.itertuples():
-        p = RUNS_DIR / r.summary_file
-        if not p.exists():
+    print()
+    print("=" * 74)
+    print("[5] spread check - is the difference bigger than the noise?")
+    print("=" * 74)
+    if "mean_waiting_s" not in df.columns:
+        print("  no mean_waiting_s column to check")
+        return
+    for demand in sorted(df["demand"].unique()):
+        sub = df[df["demand"] == demand]
+        strategies = sorted(sub["strategy"].unique())
+        if len(strategies) < 2:
             continue
-        s = pd.read_csv(p, sep=SEP)
-        if s.empty:
+        first, second = strategies[0], strategies[1]
+        a = sub[sub["strategy"] == first]["mean_waiting_s"].dropna()
+        b = sub[sub["strategy"] == second]["mean_waiting_s"].dropna()
+        if a.empty or b.empty:
             continue
-        # ignore the first 60 s: warm-up, network still filling up
-        warm = s[s["time"] >= 60]
-        rows.append({
-            "strategy": r.strategy,
-            "headway_scale": r.demand,
-            "seed": r.seed,
-            "net_running": warm["running"].mean(),
-            "net_halting": warm["halting"].mean(),
-            "net_stopped": warm["stopped"].mean(),
-            "net_mean_speed": warm["meanSpeed"].mean(),
-            # NOTE: summary's meanWaitingTime is reported per second and comes
-            # out as 0 in this scenario, so waiting time is taken from the
-            # tripinfo table instead (mean_waiting).
-            "net_teleports": int(s["teleports"].max()),
-            "net_collisions": int(s["collisions"].max()),
-            "net_arrived": int(s["arrived"].max()),
-            "net_discarded": int(s["discarded"].max()),
-        })
-    return pd.DataFrame(rows)
+        scatter = max(a.std(ddof=1) if len(a) > 1 else 0.0,
+                      b.std(ddof=1) if len(b) > 1 else 0.0)
+        difference = abs(a.mean() - b.mean())
+        verdict = ("difference > spread, likely real" if difference > scatter
+                   else "difference <= spread, NOT conclusive - more seeds needed")
+        print(f"  scale {demand:.2f}: {first}={a.mean():6.1f} vs "
+              f"{second}={b.mean():6.1f}  diff={difference:5.1f}  "
+              f"spread={scatter:5.1f}  -> {verdict}")
+
+
+def plot(df: pd.DataFrame) -> Path | None:
+    """Mean waiting time per strategy against demand, with seed error bars."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("\n  [skip] matplotlib not installed - no figure")
+        return None
+    if "mean_waiting_s" not in df.columns or df["demand"].nunique() < 2:
+        print("\n  [skip] need two or more demand levels for a figure")
+        return None
+
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    figure, axes = plt.subplots(1, 2, figsize=(11, 4.4))
+    for metric, axis, unit in (("mean_waiting_s", axes[0], "s"),
+                               ("mean_queue_m", axes[1], "m")):
+        if metric not in df.columns:
+            continue
+        for strategy in sorted(df["strategy"].unique()):
+            sub = df[df["strategy"] == strategy]
+            grouped = sub.groupby("demand")[metric]
+            mean, spread = grouped.mean(), grouped.std(ddof=1).fillna(0.0)
+            axis.errorbar(mean.index, mean.values, yerr=spread.values,
+                          marker="o", capsize=4, label=strategy)
+        axis.set_xlabel("headway scale  (<1 = more traffic)")
+        axis.set_ylabel(f"{metric}  [{unit}]")
+        axis.set_title(metric)
+        axis.grid(alpha=0.3)
+        axis.legend()
+    figure.suptitle("Signal strategy comparison")
+    figure.tight_layout()
+    FIGURE.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(FIGURE, dpi=130)
+    plt.close(figure)
+    return FIGURE
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--save", action="store_true",
-                    help="write the summary table to results/summary.csv")
+                    help="write the per-run table to results/summary.csv")
     args = ap.parse_args()
 
     print("=" * 74)
@@ -116,95 +207,35 @@ def main() -> int:
     print("=" * 74)
 
     index = load_index()
-    trips = load_tripinfos(index)
-    print(f"[2] tripinfo aggregated: {len(trips)} runs, "
-          f"{int(trips['trips'].sum())} trips total")
+    df = collect(index)
+    print(f"[2] cleaned: {len(df)}/{len(index)} runs usable")
 
-    sums = load_summaries(index)
-    print(f"[3] summary aggregated: {len(sums)} runs")
-
-    # ---- sanity checks (the data-cleaning part) --------------------------
     print()
-    print("[4] sanity checks")
-    problems = []
-    if len(trips) != len(index):
-        problems.append(f"only {len(trips)}/{len(index)} runs produced tripinfo")
-    if sums.empty:
-        problems.append("no summary data")
-    else:
-        if len(sums) != len(index):
-            problems.append(f"only {len(sums)}/{len(index)} runs produced summary")
-        bad_tp = sums[sums["net_teleports"] > 0]
-        if len(bad_tp):
-            problems.append(f"{len(bad_tp)} run(s) had teleports "
-                            f"(vehicles were teleported: results distorted)")
-        bad_col = sums[sums["net_collisions"] > 0]
-        if len(bad_col):
-            problems.append(f"{len(bad_col)} run(s) had collisions")
-    nonnum = int(trips.isna().sum().sum())
-    if not sums.empty:
-        nonnum += int(sums.isna().sum().sum())
-    if nonnum:
-        problems.append(f"{nonnum} missing values in aggregated table")
+    print("[3] quality gate")
+    problems = quality_gate(df)
     if problems:
-        for p in problems:
-            print(f"    [!] {p}")
+        for problem in problems:
+            print(f"    [!] {problem}")
     else:
         print("    no problems found")
 
-    # ---- the table -------------------------------------------------------
-    merged = trips.merge(sums, on=["strategy", "headway_scale", "seed"], how="outer")
+    if df.empty:
+        return 1
 
-    print()
-    print("=" * 74)
-    print("[5] strategy comparison  (mean +/- std over seeds)")
-    print("=" * 74)
-    metrics = ["mean_duration", "mean_waiting", "mean_timeloss",
-               "mean_halting", "net_running", "net_mean_wait", "net_arrived"]
-    metrics = [m for m in metrics if m in merged.columns]
-    for demand in sorted(merged["headway_scale"].unique()):
-        label = "higher demand" if demand < 1 else "lower demand"
-        print(f"\n--- headway scale {demand:.2f}  ({label}) ---")
-        sub = merged[merged["headway_scale"] == demand]
-        for m in metrics:
-            line = f"  {m:16s}"
-            for strat in sorted(sub["strategy"].unique()):
-                v = sub[sub["strategy"] == strat][m]
-                mean = v.mean()
-                sd = v.std(ddof=1) if len(v) > 1 else 0.0
-                line += f"  {strat}={mean:8.1f}±{sd:5.1f}"
-            print(line)
-
-    print()
-    print("=" * 74)
-    print("[6] spread check - is the difference bigger than the noise?")
-    print("=" * 74)
-    for demand in sorted(merged["headway_scale"].unique()):
-        sub = merged[merged["headway_scale"] == demand]
-        strategies = sorted(sub["strategy"].unique())
-        if len(strategies) < 2:
-            continue
-        a, b = strategies[0], strategies[1]
-        va = sub[sub["strategy"] == a]["mean_waiting"].dropna()
-        vb = sub[sub["strategy"] == b]["mean_waiting"].dropna()
-        if va.empty or vb.empty:
-            continue
-        spread = max(va.std(ddof=1) if len(va) > 1 else 0.0,
-                     vb.std(ddof=1) if len(vb) > 1 else 0.0)
-        diff = abs(va.mean() - vb.mean())
-        verdict = ("difference > spread, likely real"
-                   if diff > spread else
-                   "difference <= spread, NOT conclusive - more seeds needed")
-        print(f"  headway_scale {demand:.2f}: {a}={va.mean():6.1f} vs {b}={vb.mean():6.1f}"
-              f"  diff={diff:5.1f}  spread={spread:5.1f}  -> {verdict}")
+    compare(df)
+    spread_check(df)
 
     if args.save:
-        out = ROOT / "results" / "summary.csv"
-        merged.to_csv(out, index=False)
-        print(f"\nwrote {out.relative_to(ROOT)}")
+        SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(SUMMARY_CSV, index=False)
+        print(f"\nwrote {SUMMARY_CSV.relative_to(ROOT)}")
+    figure = plot(df)
+    if figure:
+        print(f"wrote {figure.relative_to(ROOT)}")
 
-    print("\nNext steps: plot mean waiting time per strategy, or feed the "
-          "per-run table into a statistical test (Mann-Whitney / t-test).")
+    print("\nNext steps: feed results/summary.csv into a statistical test "
+          "(Mann-Whitney / t-test), or raise --runs until the spread check "
+          "stops asking for more seeds.")
     return 0
 
 

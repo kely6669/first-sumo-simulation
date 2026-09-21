@@ -1,0 +1,4 @@
+period_s,vehicles,inserted,arrived,running_at_900s,running_at_end,still_climbing_%,max_queue_m
+8.0,225,225,190,30.4,35.2,15.7,20.8
+4.0,450,450,382,61.1,61.6,0.9,25.1
+2.0,900,892,575,140.9,282.1,100.2,98.1

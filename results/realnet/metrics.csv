@@ -1,2 +1,2 @@
 trips_completed,mean_duration_s,mean_waiting_s,median_waiting_s,p95_waiting_s,max_waiting_s,mean_timeloss_s,mean_distance_m,duration_s,inserted,arrived,mean_running,peak_running,mean_halting,teleports,collisions,mean_queue_m,p95_queue_m,max_queue_m
-1297,72.6,18.5,10.0,60.0,63.0,27.4,586.5,3599,1320,1297,26.6,34,6.8,0,0,15.25,36.01,73.05
+384,244.1,49.6,35.0,165.7,305.0,83.5,1837.4,1799,450,384,60.3,76,13.0,0,0,6.49,13.3,25.21
