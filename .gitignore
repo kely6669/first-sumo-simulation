@@ -41,6 +41,11 @@ results/*/*.xml
 results/*/*.png
 results/*/*.log
 results/*/outputs.add.xml
+# What the controller was configured to do, written by runner.run_simulation.
+# It lands in every run directory, including the committed results/demo and
+# results/realnet, so without this line a fresh clone turns dirty the moment
+# anyone follows the README.
+results/*/control.txt
 
 # Compiled networks are build output, not source.
 #

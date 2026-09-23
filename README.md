@@ -146,7 +146,7 @@ SUMO 是一个开源的交通仿真软件，它自带的固定配时红绿灯很
 |---|---|
 | `1_connect.py` | 只连不干活，证明通道是通的 |
 | `2_add_vehicles.py` | 运行时加车 + 把跑完的车删掉 |
-| `3_signal_control.py` | 接管红绿灯，`--compare` 跟固定配时对比 |
+| `3_signal_control.py` | 接管红绿灯，`--compare` 三个策略同台对比（含对照组）|
 | `run_experiments.py` | 批量跑：策略 × 需求档位 × 随机种子 |
 
 三个共享模块，每样东西**只写一份**：
@@ -238,7 +238,7 @@ cd first-sumo-simulation
 python scripts/generate_network.py             # 生成路网
 python scripts/1_connect.py                    # 连上看看
 python scripts/2_add_vehicles.py               # 加车跑起来
-python scripts/3_signal_control.py --compare   # 我的控制器 vs 固定配时
+python scripts/3_signal_control.py --compare   # 原样 vs 对照组 vs 我的控制器
 ```
 
 ### 第三步（可选）：看可视化界面
