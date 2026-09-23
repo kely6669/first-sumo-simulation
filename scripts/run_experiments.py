@@ -102,9 +102,9 @@ def main() -> int:
         row = run_once(strategy, seed, demand, args.duration)
         rows.append(row)
         print(f"  [{i:2d}/{len(combos)}] {tag_for(strategy, demand, seed):22s} "
-              f"inserted={row['inserted']:4d}  completed={row['completed']:4d}  "
-              f"left={row['still_in_network']:3d}  switches={row['switches']:3d}"
-              f"  ({row['wall_clock_s']}s)")
+              f"requested={row['requested']:4d}  departed={row['departed']:4d}  "
+              f"arrived={row['arrived']:4d}  left={row['still_in_network']:3d}  "
+              f"switches={row['switches']:3d}  ({row['wall_clock_s']}s)")
 
     INDEX.parent.mkdir(parents=True, exist_ok=True)
     # wall_clock_s is the machine's stopwatch, not a result.  It is printed

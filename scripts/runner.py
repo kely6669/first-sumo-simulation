@@ -159,14 +159,22 @@ def run_simulation(
     started = time.time()
     log_handle = (run_dir / "sumo.log").open("w", encoding="utf-8")
     traci.start(cmd, label=label, stdout=log_handle)
+    departed = 0      # vehicles that actually entered
+    arrived = 0       # vehicles that finished their route
     try:
         controller.reset()
         for _ in range(duration):
             traci.simulationStep()
+            # Read SUMO's own counters rather than keeping our own.  They are
+            # the numbers summary.xml records, and they account for the two
+            # things a hand-rolled counter gets wrong: an insertion that SUMO
+            # refuses because the network is full, and a vehicle that reaches
+            # the end of its route and is removed by SUMO.
+            departed += traci.simulation.getDepartedNumber()
+            arrived += traci.simulation.getArrivedNumber()
             now = traci.simulation.getTime()
             if injector is not None:
                 injector.step(now)
-                injector.clear_finished()
             controller.step(now)
     finally:
         # close even if the loop raised, otherwise SUMO keeps running and the
@@ -181,8 +189,9 @@ def run_simulation(
         "demand": demand if drive_demand else None,
         "duration": duration,
         "drive_demand": drive_demand,
-        "inserted": injector.inserted if injector else None,
-        "completed": injector.removed if injector else None,
+        "requested": injector.inserted if injector else None,
+        "departed": departed,
+        "arrived": arrived,
         "still_in_network": still_in_network,
         "switches": controller.switches,
         "wall_clock_s": round(time.time() - started, 1),

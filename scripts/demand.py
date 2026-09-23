@@ -1,28 +1,53 @@
-"""Demand: putting vehicles into the network and taking them out again.
+"""Demand: putting vehicles into the network.
 
 This is the "act" half of the loop that does not involve the signal.  It used
 to be copied into ``2_add_vehicles.py``, ``3_signal_control.py`` and
 ``run_experiments.py``; it lives here once.
 
-Two jobs, and the second one surprises everybody:
-
-1. Insert vehicles on a schedule.
-   ``sumo_config.ROUTES`` gives one route and a mean headway per movement.
-   Vehicles are added from Python rather than from a route file so that the
-   demand can depend on what is happening in the simulation - which is what
-   you need the moment a controller, rather than a timetable, decides things.
-
-2. Remove vehicles that have finished.
-   The four border nodes are ``dead_end``, so a vehicle that completes its
-   route does **not** disappear.  It parks at the end of the exit edge and
-   the network fills up with ghosts.  Inserting vehicles yourself means
-   removing them yourself.
+Vehicles are added from Python rather than from a route file so that the
+demand can depend on what is happening in the simulation - which is what you
+need the moment a controller, rather than a timetable, decides things.  SUMO
+takes them out again by itself when they reach the end of their route; see
+the note below, which corrects an earlier version of this file.
 
 The headways are set above the junction's capacity on purpose.  The signal
 cycle is 90 s with roughly 24 s of green per direction, so one approach
 discharges about 1800 * 24/90 ~= 480 veh/h - one vehicle every 7.5 s.  Go
 below that and the queue grows without bound; that is a property of the
 junction, not a bug in this file.
+
+
+WHO REMOVES FINISHED VEHICLES
+
+This file used to do it, with a ``clear_finished()`` method that deleted any
+vehicle more than 285 m along an exit edge.  The reasoning was that the four
+border nodes are ``dead_end``, so a vehicle that finished its route would
+park there and the network would fill up with ghosts.
+
+That reasoning was wrong, and it went untested for a long time.  Measured on
+SUMO 1.26 with net/cross.net.xml:
+
+  * 302 vehicles inserted, no removal code at all: 279 completed on their
+    own, 23 were still in transit at the end, and 279 + 23 = 302.  The
+    books balance, so nothing was stuck.
+  * Tracking every vehicle to the step it vanished: all 279 disappeared from
+    an exit edge, none from a junction or an approach.
+  * The exit edges are 289.60 m long, not the 300 m the node coordinates
+    suggest - the junction radius is subtracted.  Vehicles were last seen
+    between 275.9 m and 289.5 m, and a vehicle covers at most ~14 m in a
+    step, so they all vanished at the far end of the edge.  That is SUMO
+    removing a vehicle that finished its route.
+
+So ``dead_end`` does not trap vehicles, and the manual removal was not just
+redundant - it was harmful.  It deleted vehicles about 4.6 m (0.33 s) before
+SUMO would have, and ``traci.vehicle.remove()`` is counted by SUMO as an
+arrival, so those vehicles entered the statistics as trips that completed
+normally.  A run with the removal active reported 280 arrivals plus 116
+removals plus 22 in the network: 418 outcomes for 302 vehicles.
+
+The method has been deleted.  Insertion is all this module does now, and the
+number of completed trips is read from SUMO's own ``arrived`` counter, which
+is what ``summary.xml`` records.
 """
 
 from __future__ import annotations
@@ -36,25 +61,17 @@ from sumo_config import ROUTES, setup_traci  # noqa: E402
 setup_traci()
 import traci  # noqa: E402
 
-#: An exit edge is ARM_LENGTH (300 m) long.  A vehicle past this point has
-#: left the area we are studying, so it is removed.
-END_OF_EDGE = 285
-
-#: Prefix of the exit edges, used to recognise "this vehicle is leaving".
-EXIT_EDGE_PREFIX = "A_"
-
 #: Every tenth vehicle is a bus.  Buses accelerate and depart more slowly
 #: than cars, so having both keeps the results from being a car-only ideal.
 BUS_EVERY = 10
 
 
 class DemandInjector:
-    """Inserts vehicles on schedule and clears the ones that finished.
+    """Inserts vehicles on schedule.
 
     Typical use, once per simulation second::
 
         injector.step(now)
-        injector.clear_finished()
 
     Args:
         routes: (route id, headway seconds, final edge) triples.  Defaults to
@@ -68,7 +85,6 @@ class DemandInjector:
         self.routes = list(routes)
         self.scale = scale
         self.inserted = 0
-        self.removed = 0
         self._next_add = [0.0] * len(self.routes)
 
     @property
@@ -82,6 +98,11 @@ class DemandInjector:
 
         Returns:
             How many vehicles were inserted this step.
+
+        Note that this asks SUMO to insert them; it does not guarantee they
+        get in.  When the network is full an insertion is refused, and SUMO
+        logs a warning.  Use ``traci.simulation.getDepartedNumber()`` to
+        count the ones that actually entered.
         """
         added = 0
         for i, (route, headway, _) in enumerate(self.routes):
@@ -99,21 +120,6 @@ class DemandInjector:
             self.inserted += 1
             added += 1
         return added
-
-    def clear_finished(self) -> int:
-        """Remove vehicles that have driven past the end of an exit edge.
-
-        Returns:
-            How many vehicles were removed this step.
-        """
-        removed = 0
-        for veh_id in traci.vehicle.getIDList():
-            on_exit = traci.vehicle.getRoadID(veh_id).startswith(EXIT_EDGE_PREFIX)
-            if on_exit and traci.vehicle.getLanePosition(veh_id) > END_OF_EDGE:
-                traci.vehicle.remove(veh_id)
-                removed += 1
-        self.removed += removed
-        return removed
 
     @property
     def still_in_network(self) -> int:

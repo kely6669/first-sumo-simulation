@@ -49,8 +49,8 @@ def run_and_measure(strategy: str, duration: int, gui: bool) -> dict:
     measured = {**trip_metrics(data["trips"]), **queue_metrics(data["queues"])}
 
     result = {**summary, **measured}
-    for key in ("inserted", "completed", "still_in_network", "switches",
-                "mean_queue_m", "max_queue_m", "trips_completed",
+    for key in ("requested", "departed", "arrived", "still_in_network",
+                "switches", "mean_queue_m", "max_queue_m", "trips_completed",
                 "mean_waiting_s", "wall_clock_s"):
         if key in result:
             value = result[key]
@@ -91,7 +91,8 @@ def main() -> int:
           f"({change_pct:+.1f}%)")
     print(f"  mean wait    {base['mean_waiting_s']:7.2f} -> "
           f"{ctrl['mean_waiting_s']:7.2f} s")
-    print(f"  completed    {base['completed']:7d} -> {ctrl['completed']:7d}")
+    print(f"  completed    {base['trips_completed']:7d} -> "
+          f"{ctrl['trips_completed']:7d}   (trips SUMO recorded as finished)")
     print(f"  phase switches {base['switches']:5d} -> {ctrl['switches']:5d}")
     print("\nnote: this setup is deterministic (fixed departures, no random"
           "\n      seed), so repeating the run reproduces these numbers"
@@ -103,9 +104,9 @@ def main() -> int:
     if args.csv:
         import csv
         args.csv.parent.mkdir(parents=True, exist_ok=True)
-        keys = ["strategy", "inserted", "completed", "still_in_network",
-                "switches", "trips_completed", "mean_waiting_s",
-                "mean_queue_m", "max_queue_m", "wall_clock_s"]
+        keys = ["strategy", "requested", "departed", "arrived",
+                "still_in_network", "switches", "trips_completed",
+                "mean_waiting_s", "mean_queue_m", "max_queue_m", "wall_clock_s"]
         with args.csv.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=keys, extrasaction="ignore")
             writer.writeheader()
