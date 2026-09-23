@@ -163,6 +163,12 @@ def run_simulation(
     arrived = 0       # vehicles that finished their route
     try:
         controller.reset()
+        # Write down what the controller was configured to do.  A run
+        # directory should explain itself later, without anyone having to
+        # remember which command line produced it - two runs of the same
+        # strategy name can differ in their settings.
+        (run_dir / "control.txt").write_text(
+            controller.describe() + "\n", encoding="utf-8")
         for _ in range(duration):
             traci.simulationStep()
             # Read SUMO's own counters rather than keeping our own.  They are
@@ -185,6 +191,7 @@ def run_simulation(
 
     return {
         "strategy": strategy,
+        "controller": controller.describe(),
         "seed": seed,
         "demand": demand if drive_demand else None,
         "duration": duration,

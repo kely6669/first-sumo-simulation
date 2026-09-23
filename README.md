@@ -153,7 +153,7 @@ SUMO 是一个开源的交通仿真软件，它自带的固定配时红绿灯很
 
 | 模块 | 管什么 |
 |---|---|
-| `control.py` | **决定**红绿灯。`fixed` / `actuated` 都在这里，加新策略只要加一个类 |
+| `control.py` | **决定**红绿灯。四个策略 `fixed` / `timed` / `actuated` / `pressure` 都在这儿，加新策略只要写一个 `decide()` |
 | `demand.py` | **决定**车流。按时刻表加车、把越过边界的车删掉 |
 | `runner.py` | 把上面两件事和 SUMO 串起来，跑一次仿真。所有仿真都走这个入口 |
 
@@ -319,12 +319,13 @@ collisions           0   ← 必须为 0
 单次跑出来的数字只是**一次抽签**。要下结论，得跑一批：
 
 ```bash
-python scripts/run_experiments.py --runs 2 --duration 900 --demands 0.8 1.0 1.2
+python scripts/run_experiments.py --runs 3 --duration 900 --demands 0.8 1.0 1.2
 python scripts/analyse_results.py --save
 ```
 
-第一条命令跑 2 策略 × 3 档需求 × 2 个随机种子 = **12 次仿真**，
+第一条命令跑 4 策略 × 3 档需求 × 3 个随机种子 = **36 次仿真**，
 每次一个目录，装的是和手动跑完全一样的 XML。第二条命令把它们汇总。
+（下面坑三第六幕那张四个策略的对比表，就是这两条命令跑出来的。）
 
 `results/runs/` 是**原子**的：每次批量实验会先清空它。
 一个换了一半的实验批次，比没有批次更糟——因为里面每个数字看起来都一样可信。
@@ -332,14 +333,20 @@ python scripts/analyse_results.py --save
 汇总里最有价值的是最后那个 **spread check**：
 
 ```
-scale 0.80: actuated=  15.5 vs fixed=  24.6  diff=  9.1  spread=  0.8  -> 差异是真的
-scale 1.00: actuated=  14.4 vs fixed=  18.6  diff=  4.2  spread=  0.2  -> 差异是真的
-scale 1.20: actuated=  13.7 vs fixed=  19.4  diff=  5.7  spread=  0.4  -> 差异是真的
+headway scale 1.00
+  actuated  vs fixed      diff=  4.1  spread= 0.3  -> difference > spread, likely real
+  actuated  vs pressure   diff=  0.0  spread= 0.1  -> difference <= spread, NOT conclusive
+  actuated  vs timed      diff=  0.0  spread= 0.2  -> difference <= spread, NOT conclusive
+  fixed     vs timed      diff=  4.1  spread= 0.3  -> difference > spread, likely real
+  ...
 ```
 
-它比的是**"两个策略的差"**和**"随机种子造成的波动"**。
+它比的是**"两个策略的差"**和**"随机种子造成的波动"**，
+而且**每一对都比**——不是只挑两三个比。
 只有差大于波动时才敢说结论成立；只要有一行波动比差大，
-脚本就会老老实实写"不成立，需要更多种子"，而不是硬报一个"我的控制器差了 2.5%"。
+脚本就会老老实实写"不成立"，而不是硬报一个"我的控制器差了 2.5%"。
+（上面 `actuated` vs `pressure` 那行就是它抓出来的：两个控制器在这个路口**完全等价**，
+见坑三第六幕。）
 
 > 📌 **两个种子的实验不叫结论，叫抽样。** 这个检查就是防止你自己骗自己。
 >
@@ -506,17 +513,32 @@ t=34s 相位 4 -> 5
 
 **`setPhase()` 只是"跳"过去，跳完 SUMO 照样跑自己的程序。**
 
-也就是说，我那个"感应控制器"从来**没有真正接管过信号灯**。它只是在 SUMO 已经配好的固定配时上**随机插队**。
+也就是说，我那个"感应控制器"**确实在改信号灯**（`setPhase` 是生效的），
+但它是在 SUMO 已经配好的固定配时上**乱插队**——下一幕会看到，它插得比我想的还离谱。
 那 47% 不是"我的算法差"，是"我在破坏一个本来就配好的方案"。
 
-#### 第三幕：那怎么才能真正接管
+#### 第三幕：真正的问题不在 `setPhase`，在我跳错了地方
 
-继续探测，答案是 `setPhase` **加上** `setPhaseDuration`：
+`setPhase()` 本身没毛病——它确实能立刻改相位。问题是我让它**从一个绿灯直接跳到另一个绿灯**：
 
+```python
+NEXT_GREEN = {0: 2, 2: 6, 6: 0}
+traci.trafficlight.setPhase(TLS_ID, NEXT_GREEN[phase])    # 旧代码
 ```
-setPhase("A", 2) + setPhaseDuration("A", 1000)
-200 步后仍是相位 2        -> 成功按住
+
+相位 0 → 相位 2，中间那个**黄灯（相位 1）被整个跳过了**。
+一个从绿灯直接切到冲突绿灯的路口，那不叫配时方案，那叫撞车。
+
+正确做法是**跳到程序里的下一个相位**，也就是黄灯，然后让 SUMO 用自己的时长跑完黄灯和全红，
+自己走到下一个绿灯：
+
+```python
+traci.trafficlight.setPhase(tls_id, (phase + 1) % plan.phase_count)
 ```
+
+> 📌 顺带记一个当时探出来的结论：`setPhase` + `setPhaseDuration` 能把一个相位**按住**
+> （实测 200 步后仍停在相位 2）。**这份代码不用它**——因为控制器只提前结束绿灯、从不延长，
+> 所以没有任何相位需要按住。你要做"延长绿灯"的策略，那才需要它。
 
 #### 第四幕：修好之后，结论翻了个个儿
 
@@ -526,12 +548,18 @@ setPhase("A", 2) + setPhaseDuration("A", 1000)
 | 平均等待 | 18.50 s | **14.40 s** | **−22%** |
 | 相位切换 | 0 | 11 | — |
 
+> ⚠️ **这一幕的结论后来又被推翻了一次**——不是代码错了，是**我比错了对象**。
+> 见第六幕。
+
 而且三种需求档位全赢，spread check 全部判定"差异是真的"：
 
 ```
-scale 0.80: actuated= 15.5 vs fixed= 24.6  diff= 9.1  spread= 0.8  -> 真实
-scale 1.00: actuated= 14.4 vs fixed= 18.6  diff= 4.2  spread= 0.2  -> 真实
-scale 1.20: actuated= 13.7 vs fixed= 19.4  diff= 5.7  spread= 0.4  -> 真实
+headway scale 0.80
+  actuated  vs fixed      diff=  8.6  spread= 0.9  -> difference > spread, likely real
+headway scale 1.00
+  actuated  vs fixed      diff=  4.1  spread= 0.3  -> difference > spread, likely real
+headway scale 1.20
+  actuated  vs fixed      diff=  5.8  spread= 0.3  -> difference > spread, likely real
 ```
 
 > 📌 **第一版那个"负结果"是假的。** 它之所以看起来像真的，恰恰是因为**它可复现**——
@@ -561,9 +589,108 @@ gaining = there - here      # 切了会获得绿灯
 同一段 600 秒里成立 **9 次**。README 里那个"最小绿 10 秒"的配置，
 现在是真的在起作用了。
 
-想继续改进的话，几个方向：把 `MIN_GREEN` 从 10 提到 20 看能不能更好、
-把判定换成"压力比较"（比较两个方向的排队差，而不是布尔条件）、
-或者上强化学习（看 [sumo-rl](https://github.com/LucasAlegre/sumo-rl)）。
+#### 第六幕：我赢的那个"固定配时"，其实是 netconvert 随手写的
+
+第四幕那 22% 不是编的，但它**证明不了我以为它证明的事**。两个原因，都很朴素：
+
+**问题一：`fixed` 不是一个"配好的方案"。**
+它是 netconvert 转换路网时顺手写进 `.net.xml` 的默认值——四相位、90 秒周期、绿灯 24/24/6/24。
+没人调过它。打赢一个没人调过的默认值，只能说明默认值不好，**不能说明我的控制器好**。
+
+**问题二：我的控制器顺手改掉了周期长度，而周期本身就会影响延误。**
+90 秒周期意味着一个方向最多干等 90 秒；周期缩短，等待自然下降——
+**这跟"有没有在看排队"一点关系都没有**。
+
+两个变量混在一起，所以那个结论不成立。拆开的办法是加一个**对照组**。
+
+于是有了第四个策略 `timed`：**同样是固定配时，但它完全不看车**，
+每个绿灯只按秒数放行，到点就切。它只回答一个问题：
+
+> 如果我只把周期改短、不装任何"智能"，能拿到多少？
+
+扫一遍绿灯秒数（900 秒，同一个种子）：
+
+| 绿灯时长 | 实测周期 | 平均等待 | 相位切换 |
+|---|---|---|---|
+| 6 s | 39.0 s | 39.10 s | 69 |
+| 8 s | 45.0 s | 17.90 s | 60 |
+| **10 s** | **50.9 s** | **11.20 s** | **53** |
+| 12 s | 56.9 s | 12.30 s | 47 |
+| 15 s | 65.9 s | 14.60 s | 41 |
+| 18 s | 74.9 s | 15.30 s | 36 |
+| 20 s | 80.9 s | 16.70 s | 33 |
+| 22 s | 86.9 s | 17.30 s | 31 |
+| 25 s | 90.0 s | 18.50 s | 0 |
+
+最后一行已经**切不动了**：25 秒比计划里最长的绿灯（24 秒）还长，
+控制器永远轮不到出手，于是它退化成 `fixed`，数字也一模一样。
+
+四个策略放一起（900 秒 × 3 个种子，平均等待，秒）：
+
+| 需求档位 | `fixed` | `timed`(15s) | `actuated` | `pressure` |
+|---|---|---|---|---|
+| 0.80（车多） | 24.1 | 19.2 | **15.5** | **15.5** |
+| 1.00 | 18.5 | 14.5 | **14.5** | **14.5** |
+| 1.20（车少） | 19.4 | **13.1** | 13.6 | 13.6 |
+
+三个结论，一个比一个难看：
+
+**① 最笨的那个赢了。**
+同一个种子、同一段 900 秒，10 秒绿灯的傻瓜固定配时是 **11.20 秒**，
+我的感应控制是 **14.40 秒**。不看车，反而更快。
+
+**② 同样周期下比，优势缩水一大半。**
+感应控制跑出来的周期是 **78.2 秒**。`timed` 在绿灯 18 秒时周期 74.9 秒、20 秒时 80.9 秒，
+正好把它夹在中间——所以"周期一样长"的公平对比里，`timed` 大约是 **15.3 ~ 16.7 秒**，
+我 14.5 秒。**真正因为"看了排队"赚到的只有 1~2 秒（10% 上下）**，不是 22%。
+
+**③ `pressure` 和 `actuated` 一模一样，一位小数都不差。**
+
+不是巧合，是几何决定的。把每个绿灯相位的**出口车道**打出来：
+
+```
+phase 0: out = [A_bottomN_0, A_leftW_0, A_rightE_0, A_topS_0]
+phase 2: out = [A_bottomN_0, A_leftW_0, A_rightE_0, A_topS_0]
+phase 6: out = [A_bottomN_0, A_leftW_0, A_rightE_0, A_topS_0]
+```
+
+phase 0/2/6 放行的车**汇进完全相同的四条出口车道**。
+Max Pressure 的判据是 `排队(进口) − 排队(出口)`，三个相位的出口项完全相同、**直接抵消**，
+判据退化成"比一比谁排队长"——在这个路口，它给出的答案和感应控制的布尔条件一模一样。
+
+更根本的是：**整个 900 秒里，控制器只动过 phase 0 这一个相位。**
+
+| 相位 | 计划绿灯 | 实际跑成 | 被控制器切过 |
+|---|---|---|---|
+| 0 | 24 s | 11 s | 11 次 |
+| 2 | 24 s | 24 s | 0 |
+| 4 | 6 s | 6 s | 0 |
+| 6 | 24 s | 24 s | 0 |
+
+- phase 2 的 `gaining` 是**空集**（切过去没有任何车道新获得绿灯），gap-out 永远不成立；
+- phase 4 只有 6 秒，比 `MIN_GREEN=10` 还短，控制器根本来不及插手；
+- phase 6 的条件一次都没满足过。
+
+所以这个"感应控制"在本路口做的全部事情，其实是**把一个绿灯从 24 秒砍到 11 秒**。
+
+> 📌 **一个赢不了的实验，比一个赢了的实验有用。**
+>
+> 这次不是代码错了——代码是对的，数字也是可复现的。
+> 错的是**我拿它去比谁**（一个没人调过的默认方案），
+> 以及**我只有一个场景**。
+>
+> 四个绿灯相位里只有一个能动、一个不看车的傻瓜方案就能赢，
+> 说明这个路口**根本没有区分控制器的能力**。
+> 拿它去排"哪个算法更好"，排出来的只是噪声。
+>
+> 想真的比出东西，得换有多个路口、每个方向有独立出口、需求有波动的场景——
+> 比如 [RESCO](https://github.com/Pi-Star-Lab/RESCO) 那三个真实路网
+> （Cologne / Luxembourg / Salt Lake City）。它们用的是同一套 SUMO + TraCI，
+> 换过去只是换 `.net.xml` 和 `.rou.xml`。
+>
+> 顺带一提：MIT 2022 年那篇 [NeurIPS 论文](https://ar5iv.labs.arxiv.org/html/2210.08607)
+> 在 MDP 系列场景上发现，**不学习的 Fixed Time 和 Max Pressure 打赢了四个 DRL 方法**。
+> 这个领域里，"我的方法赢了"这句话，得先问清楚它赢的是谁。
 
 ---
 
@@ -606,39 +733,41 @@ program = traci.trafficlight.getAllProgramLogics(tls)[0] # 相位表
 所以同一个 `actuated` 能直接用在别人的路网上。实测量级：**202 个信号灯**的真实城市路网，
 1.2 秒读完全部方案。路网一个信号灯都没有时，它会明确拒绝并说明原因。
 
-**想加一个自己的控制器**？只要在 `control.py` 里写一个类，加进 `CONTROLLERS` 就行：
+**想加一个自己的控制器**？继承 `SignalController`，实现一个 `decide()`，加进 `CONTROLLERS` 就行：
 
 ```python
-class MyController(Controller):
+class MyController(SignalController):
     name = "mine"
-    def reset(self):          # SUMO 启动后调用一次
-        ...                   # 在这里 discover_plans() 读相位表
-    def step(self, now):      # 每个仿真秒调用一次
-        ...                   # 想切就 setPhase(...) + setPhaseDuration(...)
+
+    def decide(self, plan, phase, elapsed):
+        """要不要现在结束这个绿灯？elapsed 是它已经跑了多少秒。"""
+        return elapsed >= 20        # 或者任何你想得到的东西
 
 CONTROLLERS["mine"] = MyController
 ```
 
-然后 `python scripts/run_experiments.py --strategies fixed mine` 就能和固定配时对比了。
-**其它文件一行都不用改**——把 `step()` 里换成强化学习、遗传算法或模糊控制，就是一个研究贡献。
+读相位表、判断绿灯从哪一秒开始、切完黄灯怎么走——**基类里都写好了**，
+你只需要回答"切不切"这一个问题。然后
+`python scripts/run_experiments.py --strategies fixed mine` 就能和固定配时对比了。
+**其它文件一行都不用改**——把 `decide()` 里换成强化学习、遗传算法或模糊控制，就是一个研究贡献。
 
-> ⚠️ 自己写控制器时记住坑三的教训：**`setPhase()` 单独用是不管用的。**
-> 它只是跳过去，SUMO 接着跑自己的程序。要真正接管，必须**同时设置相位时长**：
+> ⚠️ 自己写控制器时记住坑三的教训，分清楚两件事：
 >
-> ```python
-> traci.trafficlight.setPhase(tls, index)
-> traci.trafficlight.setPhaseDuration(tls, seconds)   # 少了这行就不是控制
-> ```
+> - **提前结束**绿灯：`setPhase(tls, next_phase)` 就够了，SUMO 会自己跑完黄灯。
+>   这里的控制器全都只做这件事，所以它们**不碰** `setPhaseDuration`。
+> - **按住 / 延长**一个相位：那才需要 `setPhaseDuration(tls, seconds)`。
 >
-> 这个坑我踩过，代价是一个假结论。见下面的坑三。
+> 旧代码真正的错误是让 `setPhase` **从绿灯直接跳到下一个绿灯**，把黄灯整个跳过了。
+> 这个坑的代价是一个假结论，见坑三。
 
 改完直接重跑就行，路网会自动重新生成。几个值得试的小实验：
 
-1. 最小绿从 10 改成 20，看控制器是变好还是变差（现在它是赢的，赢了 −18%）
+1. 最小绿从 10 改成 20，看控制器是变好还是变差（先看坑三第六幕，别急着高兴）
 2. 车道数改成 1，看通行能力掉多少
 3. 发车间隔全部减半，看什么时候开始堵
 4. 把 `--runs` 提到 10，看 spread check 的结论会不会变
 5. 拿一份**你自己城市**的 `.osm` 跑一遍，看控制器的结论还成不成立
+6. 改 `control.py` 里的 `TIMED_SWITCH`，看第六幕那张表换个数是不是还成立
 
 ---
 
@@ -647,8 +776,10 @@ CONTROLLERS["mine"] = MyController
 - [x] 多种子重复 + 波动检查（`run_experiments.py` + spread check）
 - [x] 控制器和具体路网解耦，能用在别人的路网上（`control.discover_plans`）
 - [x] 一个仿真入口，两种车流来源（`runner.run_simulation` 的 `drive_demand`）
+- [x] 固定配时对照组 + Max Pressure，四个策略同台（`control.py`）
+- [ ] **换一个真的能区分控制器的场景**（见坑三第六幕：本路口只有一个相位可动）
 - [ ] 控制器只看排队长度，没考虑等待时间和延误
-- [ ] gap-out 是布尔条件，还没换成"压力比较"（比较两个方向的排队差）
+- [ ] `pressure` 的输出车道项在共享出口时会抵消，需要一个非退化的路网才能验它
 - [ ] 只管单点，没做相邻路口的协调（绿波带）；多路口时每步要查几百次 TraCI，能再快
 - [ ] 车流是合成的，没做过标定
 - [ ] spread check 只是"差 vs 波动"的粗判，还没接正式的统计检验（Mann-Whitney / t 检验）
@@ -659,6 +790,7 @@ CONTROLLERS["mine"] = MyController
 
 - [SUMO 官方文档](https://sumo.dlr.de/docs/)
 - [TraCI 接口文档](https://sumo.dlr.de/docs/TraCI/index.html)
+- [RESCO](https://github.com/Pi-Star-Lab/RESCO) — 真实路网 + 固定配时 / Max Pressure / Max Wave 基准，坑三第六幕说的就是它
 - [sumo-rl](https://github.com/LucasAlegre/sumo-rl) — 想上强化学习的话看这个
 
 ---

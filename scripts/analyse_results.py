@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import pandas as pd
@@ -125,9 +126,14 @@ def spread_check(df: pd.DataFrame) -> None:
     """Is the difference between strategies bigger than the seed noise?
 
     This is the check that stops a two-seed experiment from being reported as
-    a finding.  It compares the gap between strategies against the scatter
-    across seeds; when the scatter is the bigger of the two, the honest
-    verdict is "not enough runs", not "strategy A wins".
+    a finding.  For every pair of strategies it compares the gap between them
+    against the scatter across seeds; when the scatter is the bigger of the
+    two, the honest verdict is "not enough runs", not "strategy A wins".
+
+    Every pair, not just the first two.  With four strategies the pairs
+    nobody thought to look at are usually the ones that decide whether the
+    headline is safe - and a check that quietly compares two of them while
+    printing no warning is worse than no check at all.
     """
     print()
     print("=" * 74)
@@ -139,21 +145,23 @@ def spread_check(df: pd.DataFrame) -> None:
     for demand in sorted(df["demand"].unique()):
         sub = df[df["demand"] == demand]
         strategies = sorted(sub["strategy"].unique())
+        print(f"\n  headway scale {demand:.2f}")
         if len(strategies) < 2:
+            print("    only one strategy - nothing to compare")
             continue
-        first, second = strategies[0], strategies[1]
-        a = sub[sub["strategy"] == first]["mean_waiting_s"].dropna()
-        b = sub[sub["strategy"] == second]["mean_waiting_s"].dropna()
-        if a.empty or b.empty:
-            continue
-        scatter = max(a.std(ddof=1) if len(a) > 1 else 0.0,
-                      b.std(ddof=1) if len(b) > 1 else 0.0)
-        difference = abs(a.mean() - b.mean())
-        verdict = ("difference > spread, likely real" if difference > scatter
-                   else "difference <= spread, NOT conclusive - more seeds needed")
-        print(f"  scale {demand:.2f}: {first}={a.mean():6.1f} vs "
-              f"{second}={b.mean():6.1f}  diff={difference:5.1f}  "
-              f"spread={scatter:5.1f}  -> {verdict}")
+        series = {name: sub[sub["strategy"] == name]["mean_waiting_s"].dropna()
+                  for name in strategies}
+        for first, second in combinations(strategies, 2):
+            a, b = series[first], series[second]
+            if a.empty or b.empty:
+                continue
+            scatter = max(a.std(ddof=1) if len(a) > 1 else 0.0,
+                          b.std(ddof=1) if len(b) > 1 else 0.0)
+            difference = abs(a.mean() - b.mean())
+            verdict = ("difference > spread, likely real" if difference > scatter
+                       else "difference <= spread, NOT conclusive")
+            print(f"    {first:9s} vs {second:9s}  diff={difference:5.1f}  "
+                  f"spread={scatter:4.1f}  -> {verdict}")
 
 
 def plot(df: pd.DataFrame) -> Path | None:

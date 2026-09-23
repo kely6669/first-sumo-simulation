@@ -3,7 +3,8 @@
 This is the experiment layer.  One simulation produces one set of output
 files; running many of them is what turns "a simulation" into "a result".
 
-    strategies : any name in control.CONTROLLERS (fixed, actuated, ...)
+    strategies : any name in control.CONTROLLERS
+                 (fixed, timed, actuated, pressure - see the README)
     seeds      : SUMO's --seed, which controls departure randomness
     demand     : a multiplier on the headways in sumo_config.ROUTES
 
@@ -14,6 +15,7 @@ Each run gets its own directory, holding exactly the files a manual
                                              /summary.xml
                                              /queues.xml
                                              /sumo.log
+                                             /control.txt
     results/index.csv      one row per run, listing the parameters
 
 The batch is atomic: results/runs/ is wiped at the start so the index and
@@ -70,7 +72,8 @@ def main() -> int:
     ap.add_argument("--duration", type=int, default=900)
     ap.add_argument("--demands", type=float, nargs="+", default=[1.0],
                     help="headway multipliers, e.g. 0.8 1.0 1.2")
-    ap.add_argument("--strategies", nargs="+", default=["fixed", "actuated"],
+    ap.add_argument("--strategies", nargs="+",
+                    default=["fixed", "timed", "actuated", "pressure"],
                     choices=sorted(CONTROLLERS))
     ap.add_argument("--keep", action="store_true",
                     help="do not wipe results/runs/ first (results may then "

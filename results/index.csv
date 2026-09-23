@@ -1,13 +1,37 @@
-strategy,seed,demand,duration,drive_demand,requested,departed,arrived,still_in_network,switches,run_dir,tag
-fixed,0,0.8,900,True,365,365,336,29,0,results\runs\fixed_d0.80_s0,fixed_d0.80_s0
-fixed,1,0.8,900,True,365,365,334,31,0,results\runs\fixed_d0.80_s1,fixed_d0.80_s1
-fixed,0,1.0,900,True,302,302,278,24,0,results\runs\fixed_d1.00_s0,fixed_d1.00_s0
-fixed,1,1.0,900,True,302,302,280,22,0,results\runs\fixed_d1.00_s1,fixed_d1.00_s1
-fixed,0,1.2,900,True,242,241,225,16,0,results\runs\fixed_d1.20_s0,fixed_d1.20_s0
-fixed,1,1.2,900,True,242,241,225,16,0,results\runs\fixed_d1.20_s1,fixed_d1.20_s1
-actuated,0,0.8,900,True,365,365,333,32,11,results\runs\actuated_d0.80_s0,actuated_d0.80_s0
-actuated,1,0.8,900,True,365,365,333,32,11,results\runs\actuated_d0.80_s1,actuated_d0.80_s1
-actuated,0,1.0,900,True,302,302,274,28,11,results\runs\actuated_d1.00_s0,actuated_d1.00_s0
-actuated,1,1.0,900,True,302,302,275,27,11,results\runs\actuated_d1.00_s1,actuated_d1.00_s1
-actuated,0,1.2,900,True,242,241,222,19,11,results\runs\actuated_d1.20_s0,actuated_d1.20_s0
-actuated,1,1.2,900,True,242,241,222,19,11,results\runs\actuated_d1.20_s1,actuated_d1.20_s1
+strategy,controller,seed,demand,duration,drive_demand,requested,departed,arrived,still_in_network,switches,run_dir,tag
+fixed,"fixed: SUMO runs the network's own plan, untouched",0,0.8,900,True,365,365,336,29,0,results\runs\fixed_d0.80_s0,fixed_d0.80_s0
+fixed,"fixed: SUMO runs the network's own plan, untouched",1,0.8,900,True,365,365,334,31,0,results\runs\fixed_d0.80_s1,fixed_d0.80_s1
+fixed,"fixed: SUMO runs the network's own plan, untouched",2,0.8,900,True,365,365,334,31,0,results\runs\fixed_d0.80_s2,fixed_d0.80_s2
+fixed,"fixed: SUMO runs the network's own plan, untouched",0,1.0,900,True,302,302,278,24,0,results\runs\fixed_d1.00_s0,fixed_d1.00_s0
+fixed,"fixed: SUMO runs the network's own plan, untouched",1,1.0,900,True,302,302,280,22,0,results\runs\fixed_d1.00_s1,fixed_d1.00_s1
+fixed,"fixed: SUMO runs the network's own plan, untouched",2,1.0,900,True,302,302,279,23,0,results\runs\fixed_d1.00_s2,fixed_d1.00_s2
+fixed,"fixed: SUMO runs the network's own plan, untouched",0,1.2,900,True,242,241,225,16,0,results\runs\fixed_d1.20_s0,fixed_d1.20_s0
+fixed,"fixed: SUMO runs the network's own plan, untouched",1,1.2,900,True,242,241,225,16,0,results\runs\fixed_d1.20_s1,fixed_d1.20_s1
+fixed,"fixed: SUMO runs the network's own plan, untouched",2,1.2,900,True,242,241,225,16,0,results\runs\fixed_d1.20_s2,fixed_d1.20_s2
+timed,"timed: 1 traffic light(s), switch_every=15s",0,0.8,900,True,365,365,328,37,41,results\runs\timed_d0.80_s0,timed_d0.80_s0
+timed,"timed: 1 traffic light(s), switch_every=15s",1,0.8,900,True,365,365,330,35,41,results\runs\timed_d0.80_s1,timed_d0.80_s1
+timed,"timed: 1 traffic light(s), switch_every=15s",2,0.8,900,True,365,365,331,34,41,results\runs\timed_d0.80_s2,timed_d0.80_s2
+timed,"timed: 1 traffic light(s), switch_every=15s",0,1.0,900,True,302,302,277,25,41,results\runs\timed_d1.00_s0,timed_d1.00_s0
+timed,"timed: 1 traffic light(s), switch_every=15s",1,1.0,900,True,302,302,277,25,41,results\runs\timed_d1.00_s1,timed_d1.00_s1
+timed,"timed: 1 traffic light(s), switch_every=15s",2,1.0,900,True,302,302,276,26,41,results\runs\timed_d1.00_s2,timed_d1.00_s2
+timed,"timed: 1 traffic light(s), switch_every=15s",0,1.2,900,True,242,241,223,18,41,results\runs\timed_d1.20_s0,timed_d1.20_s0
+timed,"timed: 1 traffic light(s), switch_every=15s",1,1.2,900,True,242,241,223,18,41,results\runs\timed_d1.20_s1,timed_d1.20_s1
+timed,"timed: 1 traffic light(s), switch_every=15s",2,1.2,900,True,242,241,223,18,41,results\runs\timed_d1.20_s2,timed_d1.20_s2
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",0,0.8,900,True,365,365,333,32,11,results\runs\actuated_d0.80_s0,actuated_d0.80_s0
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",1,0.8,900,True,365,365,333,32,11,results\runs\actuated_d0.80_s1,actuated_d0.80_s1
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",2,0.8,900,True,365,365,332,33,11,results\runs\actuated_d0.80_s2,actuated_d0.80_s2
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",0,1.0,900,True,302,302,274,28,11,results\runs\actuated_d1.00_s0,actuated_d1.00_s0
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",1,1.0,900,True,302,302,275,27,11,results\runs\actuated_d1.00_s1,actuated_d1.00_s1
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",2,1.0,900,True,302,302,275,27,11,results\runs\actuated_d1.00_s2,actuated_d1.00_s2
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",0,1.2,900,True,242,241,222,19,11,results\runs\actuated_d1.20_s0,actuated_d1.20_s0
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",1,1.2,900,True,242,241,222,19,11,results\runs\actuated_d1.20_s1,actuated_d1.20_s1
+actuated,"actuated: 1 traffic light(s), min_green=10s max_green=45s",2,1.2,900,True,242,241,222,19,11,results\runs\actuated_d1.20_s2,actuated_d1.20_s2
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",0,0.8,900,True,365,365,333,32,11,results\runs\pressure_d0.80_s0,pressure_d0.80_s0
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",1,0.8,900,True,365,365,333,32,11,results\runs\pressure_d0.80_s1,pressure_d0.80_s1
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",2,0.8,900,True,365,365,332,33,11,results\runs\pressure_d0.80_s2,pressure_d0.80_s2
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",0,1.0,900,True,302,302,274,28,11,results\runs\pressure_d1.00_s0,pressure_d1.00_s0
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",1,1.0,900,True,302,302,275,27,11,results\runs\pressure_d1.00_s1,pressure_d1.00_s1
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",2,1.0,900,True,302,302,275,27,11,results\runs\pressure_d1.00_s2,pressure_d1.00_s2
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",0,1.2,900,True,242,241,222,19,11,results\runs\pressure_d1.20_s0,pressure_d1.20_s0
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",1,1.2,900,True,242,241,222,19,11,results\runs\pressure_d1.20_s1,pressure_d1.20_s1
+pressure,"pressure: 1 traffic light(s), min_green=10s max_green=45s",2,1.2,900,True,242,241,222,19,11,results\runs\pressure_d1.20_s2,pressure_d1.20_s2

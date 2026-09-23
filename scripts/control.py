@@ -13,9 +13,12 @@ likes, but it must expose:
     step(now)   called once per simulation second
 
 Adding a new strategy
-    Write a class with the four members above and add it to CONTROLLERS.
-    Nothing else in the project needs to change - which is what the README
-    means by "replace the decision step with reinforcement learning".
+    Subclass SignalController and implement ``decide``, a yes/no answer to
+    "end this green now?", then add the class to CONTROLLERS.  The tiresome
+    part - reading the plan, noticing when each green starts, running the
+    amber - is written once in the base class.  Nothing else in the project
+    needs to change, which is what the README means by "replace the
+    decision step with reinforcement learning".
 
 Nothing here is specific to one intersection
     The signal plan used to be hard-coded: a TLS id of "A" and three phase
@@ -36,22 +39,37 @@ This was measured, not assumed.  Probe on SUMO 1.26 with net/cross.net.xml:
     that link comes from is ``getControlledLinks(tls)[i][0][0]``.  On the
     cross that is 12 links and a 12-character state.
 
-  * ``setPhase(tls, i)`` on its own does **not** take the light over.  It
-    jumps to phase i, and SUMO then carries on through its own program:
+  * ``setPhase(tls, i)`` changes the phase immediately, but it does **not**
+    change how long that phase lasts.  SUMO resumes its own program from
+    phase i and runs the rest of it at the planned durations:
 
         setPhase("A", 2)
         t=25s phase 2 -> 3      <- SUMO moved on by itself
         t=28s phase 3 -> 4
         t=34s phase 4 -> 5
 
-    A controller built on ``setPhase`` alone is therefore fighting the
-    built-in plan rather than replacing it.  That is exactly the bug this
-    module used to have, and it is why the "actuated" arm used to lose to
-    fixed-time: it was not controlling anything, it was interrupting a plan
-    that was already tuned.
+    That is exactly what this module wants.  Every controller here only ever
+    *ends a green early*: it jumps to the next phase in the program, which
+    is the amber, and SUMO runs the amber and the all-red that follow it at
+    their own durations.  Nothing needs to be held, so nothing is.
 
-  * ``setPhase`` **plus** ``setPhaseDuration`` does take over: the phase
-    then stays put until it is changed or the duration runs out.
+  * ``setPhase`` **plus** ``setPhaseDuration`` does hold a phase: give it a
+    long duration and the light stays put (measured on the cross - still in
+    phase 2 after 200 steps, while the same call without the duration had
+    moved on twice).  No controller here calls it.  You need it to *extend*
+    a green past what the network's own plan allows, which is the one thing
+    this module deliberately does not do - see below.
+
+  * The bug this module used to have was neither of those.  The old
+    controller jumped **from one green straight to the next green**::
+
+        NEXT_GREEN = {0: 2, 2: 6, 6: 0}
+        traci.trafficlight.setPhase(tls, NEXT_GREEN[phase])
+
+    which skips the amber altogether.  An intersection that goes straight
+    from a green to a conflicting green is not a signal plan, it is a
+    collision.  Advancing to ``(phase + 1) % phase_count`` is the fix: that
+    lands on the yellow, and SUMO takes it from there.
 
   * A phase that contains a ``y`` anywhere in its state is a transition
     (yellow / all-red), never somewhere to rest.  Green phases are the ones
@@ -59,14 +77,28 @@ This was measured, not assumed.  Probe on SUMO 1.26 with net/cross.net.xml:
     phase 4, a 6-second protected-left phase that the old hard-coded table
     had missed entirely.
 
-WHAT THE ACTUATED CONTROLLER IS ALLOWED TO DO
+WHAT THE QUEUE-DRIVEN CONTROLLERS ARE ALLOWED TO DO
 
-It may end a green **early**; it never extends one past the duration the
+They may end a green **early**; they never extend one past the duration the
 network's own plan gives it.  That asymmetry is deliberate.  Extending is
 how a controller starves the cross street - on the cross, phase 4 is only 6
 seconds long, and holding it for MAX_GREEN would leave the other three
 approaches standing still.  Ending early cannot starve anybody, so that is
-the only power this controller takes.
+the only power these controllers take.
+
+THE FOUR STRATEGIES
+
+    fixed     do nothing; SUMO runs the plan netconvert wrote (90 s cycle)
+    timed     fixed-time on a short cycle; ignores the traffic entirely
+    actuated  end the green once the queue it is serving has cleared
+    pressure  end the green when the next phase scores higher (Varaiya)
+
+``fixed`` and ``timed`` are the same *kind* of thing - a clock and a table -
+and both are here because they answer different questions.  ``fixed`` is the
+number the network ships with.  ``timed`` is a fixed-time plan tuned to the
+cycle length the actuated controller happens to produce, and it is the arm
+that makes the actuated result mean anything: without it, "actuated beats
+fixed" cannot be told apart from "a shorter cycle beats a longer one".
 """
 
 from __future__ import annotations
@@ -84,6 +116,12 @@ import traci  # noqa: E402
 # Actuated control limits, in seconds.
 MIN_GREEN = 10   # never cut a green shorter than this
 MAX_GREEN = 45   # force a switch, for networks whose greens run longer
+
+#: How long the "timed" controller holds each green.  Chosen so that it makes
+#: roughly as many phase changes as the actuated controller does on the cross,
+#: which is the point of having it at all - see TimedController.  The README
+#: has the sweep, so you can see what other values do.
+TIMED_SWITCH = 15
 
 #: Characters in a phase state that mean "this link may go".
 GREEN_CHARS = "Gg"
@@ -113,6 +151,9 @@ class SignalPlan:
         lanes: phase index -> the approach lanes that have green in it.
             Only green phases appear here; a transition phase is absent,
             which is how callers recognise one.
+        out_lanes: phase index -> the lanes those green movements feed into.
+            Needed by the pressure controller, which scores a movement by the
+            queue it removes minus the queue it feeds into.
         next_green: green phase index -> the next green phase in program
             order.
         losing: green phase index -> the lanes that would LOSE green if the
@@ -123,6 +164,7 @@ class SignalPlan:
     tls_id: str
     phase_count: int
     lanes: dict[int, list[str]] = field(default_factory=dict)
+    out_lanes: dict[int, list[str]] = field(default_factory=dict)
     next_green: dict[int, int] = field(default_factory=dict)
     losing: dict[int, list[str]] = field(default_factory=dict)
     gaining: dict[int, list[str]] = field(default_factory=dict)
@@ -153,14 +195,17 @@ def discover_plan(tls_id: str) -> SignalPlan:
         if TRANSITION_CHAR in phase.state:
             continue                       # yellow / all-red: not ours to hold
         lanes = set()
+        outs = set()
         for position, char in enumerate(phase.state):
             if char not in GREEN_CHARS or position >= len(links):
                 continue
             # one link may fan out to several connections; all share the
-            # same approach lane
+            # same approach lane, and they may point at several exit lanes
             lanes.update(connection[0] for connection in links[position])
+            outs.update(connection[1] for connection in links[position])
         if lanes:
             plan.lanes[index] = sorted(lanes)
+            plan.out_lanes[index] = sorted(outs)
 
     # Walk the program forward from each green to find the next one.  The
     # phases in between are the transition, so "next green" is not simply
@@ -248,40 +293,38 @@ class FixedTimeController(Controller):
     def step(self, now: float) -> None:
         return None
 
+    def describe(self) -> str:
+        return f"{self.name}: SUMO runs the network's own plan, untouched"
 
-class ActuatedController(Controller):
-    """Gap-out / max-out actuated control, on every light in the network.
 
-    The rule, per traffic light, in full:
+class SignalController(Controller):
+    """Everything a controller must do that is not the actual signal rule.
 
-        * find the green phase it is currently in and how long it has run
-        * if that is less than MIN_GREEN, do nothing - a green is never cut
-          short
-        * otherwise switch if the serving direction has cleared **and** the
-          next direction actually has somebody waiting (gap-out)
-        * in any case switch once MAX_GREEN has elapsed (max-out)
+    There is more of this than there looks, and none of it is interesting:
+
+        * read every light's plan out of the simulation at startup
+        * start each light from a known phase, so a run repeats exactly
+        * notice when a green begins, and how long it has been running
+        * ask the subclass whether it is time to switch
+        * move to the next phase in the program when it says yes
+
+    A subclass therefore implements :meth:`decide` and nothing else.  Getting
+    the loop above subtly wrong - acting during the amber, restarting the
+    green clock on the wrong step, judging a queue count that still describes
+    the previous phase - is how a controller ends up measuring itself instead
+    of the traffic, and it is not a mistake worth making three times.
 
     Switching means advancing to the *next phase in the program*, which is
     the yellow.  SUMO then runs the yellow and the all-red that follow it at
-    their own durations and arrives at the next green by itself.  That is
-    the whole reason this controller does not simply jump to the next green:
+    their own durations and arrives at the next green by itself.  That is the
+    whole reason no controller here jumps straight to the next green:
     jumping skips the amber, and an intersection that goes straight from
     green to a conflicting green is not a signal plan, it is a collision.
-
-    MAX_GREEN only binds when a green in the network's own plan is longer
-    than MAX_GREEN.  On the cross every green is 24 s, so max-out never
-    fires there - the network's plan is already stricter.  On a network with
-    90-second greens it will fire.
     """
 
-    name = "actuated"
-
-    def __init__(self, tls_ids=None, min_green: float = MIN_GREEN,
-                 max_green: float = MAX_GREEN) -> None:
+    def __init__(self, tls_ids=None) -> None:
         super().__init__()
         self.requested = tls_ids
-        self.min_green = min_green
-        self.max_green = max_green
         self.plans: dict[str, SignalPlan] = {}
         self._green_since: dict[str, float] = {}
         self._last_phase: dict[str, int] = {}
@@ -291,9 +334,9 @@ class ActuatedController(Controller):
         self.plans = discover_plans(self.requested)
         if not self.plans:
             raise SystemExit(
-                "actuated control needs traffic lights, and this network has\n"
-                "none that this controller can read.  Either the network has\n"
-                "no signals at all (check with netconvert or netedit), or\n"
+                f"{self.name} control needs traffic lights, and this network\n"
+                "has none that this controller can read.  Either the network\n"
+                "has no signals at all (check with netconvert or netedit), or\n"
                 "every junction is give-way.  Build it with --tls.guess, or\n"
                 "run the fixed strategy, which does not need signals.")
         now = traci.simulation.getTime()
@@ -322,17 +365,21 @@ class ActuatedController(Controller):
                 continue
 
             elapsed = now - self._green_since[tls_id]
-            if elapsed < self.min_green:
-                continue
-
-            # gap-out and max-out, both spelled out:
-            #   - served:  the lanes that would LOSE the green if we switch
-            #              now (shared lanes are excluded, see discover_plan)
-            #   - waiting: the lanes that would GAIN it
-            served = total_queue(plan.losing[phase])
-            waiting = total_queue(plan.gaining[phase])
-            if elapsed >= self.max_green or (served == 0 and waiting > 0):
+            if self.decide(plan, phase, elapsed):
                 self._advance(tls_id, plan, phase, now)
+
+    def decide(self, plan: SignalPlan, phase: int, elapsed: float) -> bool:
+        """Whether to end the green that ``phase`` is running right now.
+
+        Args:
+            plan: the light's plan, with its lane lists and phase table.
+            phase: the green phase index currently being served.
+            elapsed: how many seconds that green has been running.
+
+        Returns:
+            True to move on to the amber.
+        """
+        raise NotImplementedError
 
     def _advance(self, tls_id: str, plan: SignalPlan,
                  phase: int, now: float) -> None:
@@ -343,14 +390,166 @@ class ActuatedController(Controller):
         self._green_since[tls_id] = now
         self.switches += 1
 
+    def settings(self) -> str:
+        """The tunables, as text, for the run log."""
+        return "no tunables"
+
     def describe(self) -> str:
+        """One line for the run log, saying what this controller is doing."""
         return (f"{self.name}: {len(self.plans)} traffic light(s), "
-                f"min_green={self.min_green:.0f}s max_green={self.max_green:.0f}s")
+                f"{self.settings()}")
+
+
+class ActuatedController(SignalController):
+    """Gap-out / max-out actuated control, on every light in the network.
+
+    The rule, per traffic light, in full:
+
+        * find the green phase it is currently in and how long it has run
+        * if that is less than MIN_GREEN, do nothing - a green is never cut
+          short
+        * otherwise switch if the serving direction has cleared **and** the
+          next direction actually has somebody waiting (gap-out)
+        * in any case switch once MAX_GREEN has elapsed (max-out)
+
+    MAX_GREEN only binds when a green in the network's own plan is longer
+    than MAX_GREEN.  On the cross every green is 24 s, so max-out never
+    fires there - the network's plan is already stricter.  On a network with
+    90-second greens it will fire.
+    """
+
+    name = "actuated"
+
+    def __init__(self, tls_ids=None, min_green: float = MIN_GREEN,
+                 max_green: float = MAX_GREEN) -> None:
+        super().__init__(tls_ids)
+        self.min_green = min_green
+        self.max_green = max_green
+
+    def decide(self, plan: SignalPlan, phase: int, elapsed: float) -> bool:
+        """Gap-out and max-out, spelled out.
+
+        ``losing`` is the lanes that would lose the green if we switch now
+        (lanes shared between phases are excluded, see discover_plan), and
+        ``gaining`` is the lanes that would get it.  Holding a green for a
+        direction that has already cleared, while another one sits waiting,
+        is the exact thing an actuated controller exists to stop.
+        """
+        if elapsed < self.min_green:
+            return False
+        served = total_queue(plan.losing[phase])
+        waiting = total_queue(plan.gaining[phase])
+        return elapsed >= self.max_green or (served == 0 and waiting > 0)
+
+    def settings(self) -> str:
+        return f"min_green={self.min_green:.0f}s max_green={self.max_green:.0f}s"
+
+
+class PressureController(SignalController):
+    """Max-pressure control.
+
+    The rule comes from Varaiya (2013) and is the standard non-learning
+    baseline in the field - it is one of the three static controllers shipped
+    with the RESCO benchmark, alongside fixed-time and max-wave.
+
+    A movement is scored by the queue it removes minus the queue it feeds
+    into::
+
+        pressure(link)  = queue(approach lane) - queue(exit lane)
+        pressure(phase) = sum of pressure(link) over the links green in it
+
+    The subtraction is the whole idea.  Counting queues alone says "serve
+    whoever is waiting most"; pressure also asks whether serving them helps,
+    because pushing vehicles into a lane that is already backed up moves the
+    jam rather than clearing it.
+
+    This controller switches when the next green phase scores higher than the
+    one currently being served, subject to the same minimum green and the
+    same yellow handling as the actuated controller.  That is the textbook
+    rule: no extra "is anybody waiting?" gate, because the score already
+    answers that question.
+
+    Why it is here: the actuated controller used to be benchmarked only
+    against the plan netconvert happened to write into the network.  That is
+    a weak baseline, and the comparison was worse than it looked - see the
+    README.  Max-pressure is what the literature actually compares against.
+    """
+
+    name = "pressure"
+
+    def __init__(self, tls_ids=None, min_green: float = MIN_GREEN,
+                 max_green: float = MAX_GREEN) -> None:
+        super().__init__(tls_ids)
+        self.min_green = min_green
+        self.max_green = max_green
+
+    @staticmethod
+    def pressure(plan: SignalPlan, phase: int) -> int:
+        """Queue the phase would clear, minus queue it would feed into."""
+        return total_queue(plan.lanes[phase]) - total_queue(plan.out_lanes[phase])
+
+    def decide(self, plan: SignalPlan, phase: int, elapsed: float) -> bool:
+        """Textbook max-pressure: switch only if the next phase scores higher.
+
+        There is deliberately no "is anybody waiting?" test here.  The score
+        already answers that - a phase whose approaches are empty has a
+        pressure of zero or less, so it cannot beat one with vehicles on it.
+        """
+        if elapsed < self.min_green:
+            return False
+        following = plan.next_green[phase]
+        return (elapsed >= self.max_green
+                or self.pressure(plan, following) > self.pressure(plan, phase))
+
+    def settings(self) -> str:
+        return f"min_green={self.min_green:.0f}s max_green={self.max_green:.0f}s"
+
+
+class TimedController(SignalController):
+    """Fixed-time control on a short cycle: the control group.
+
+    This controller ignores the traffic completely.  It holds every green for
+    exactly ``switch_every`` seconds and then moves on, whatever the lanes
+    look like.  A traffic engineer would call it a fixed-time plan with a
+    short green split.  It is here to answer the one question the actuated
+    controller could not answer on its own:
+
+        how much of the gain comes from *reacting to traffic*, and how much
+        from simply *cycling faster*?
+
+    The plan netconvert writes into the cross gives each direction 24 s of
+    green in a 90 s cycle.  The actuated controller mostly ends up cycling
+    about three times faster than that.  Shortening a cycle reduces delay all
+    by itself - waiting vehicles get served sooner even if nobody is watching
+    the queues - so beating the 90 s plan proves a good deal less than it
+    looks like it proves.  Running this arm at the same cycle length as the
+    actuated one splits the two effects apart.
+
+    TIMED_SWITCH is set to the value at which this controller makes roughly
+    as many phase changes as the actuated one does on the cross.  It is a
+    knob, not a constant of nature: setting it to 24 reproduces something
+    close to the network's own plan, and the README has the full sweep.
+    """
+
+    name = "timed"
+
+    def __init__(self, tls_ids=None, switch_every: float = TIMED_SWITCH) -> None:
+        super().__init__(tls_ids)
+        self.switch_every = switch_every
+
+    def decide(self, plan: SignalPlan, phase: int, elapsed: float) -> bool:
+        """A clock.  Note which arguments this does not look at."""
+        return elapsed >= self.switch_every
+
+    def settings(self) -> str:
+        return f"switch_every={self.switch_every:.0f}s"
 
 
 CONTROLLERS: dict[str, type[Controller]] = {
     FixedTimeController.name: FixedTimeController,
+    TimedController.name: TimedController,
     ActuatedController.name: ActuatedController,
+    PressureController.name: PressureController,
 }
 
 
