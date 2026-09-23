@@ -1,11 +1,28 @@
 # Dependencies
 #
-# This project has no third-party Python dependencies: it uses only the
-# `traci` and `sumolib` modules that ship inside SUMO's tools directory,
-# plus the Python standard library.
+# SUMO is the only thing that is not a Python package.  Install it, point
+# SUMO_HOME at it, and `traci` / `sumolib` come with it - they live in
+# SUMO's tools directory and are not on PyPI in a usable form.
 #
-# All you need is:
-#   1. SUMO installed  ->  https://sumo.dlr.de/docs/Installing.html
-#   2. SUMO_HOME environment variable pointing at it
+# Everything else:
 #
-# Kept here so `pip install -r requirements.txt` does not fail on CI.
+#   pandas      required by the analysis layer
+#   matplotlib  optional; the plots are skipped with a message without it
+#
+# Which script needs what:
+#
+#   1_connect.py             SUMO only
+#   2_add_vehicles.py        SUMO only
+#   generate_network.py      SUMO only
+#   build_from_osm.py        SUMO only
+#   run_experiments.py       SUMO only
+#   3_signal_control.py      + pandas  (it measures by importing analyse_run)
+#   analyse_run.py           + pandas, + matplotlib for the two figures
+#   analyse_results.py       + pandas, + matplotlib for the figure
+#
+# An earlier version of this file claimed the project had no third-party
+# Python dependencies at all.  That was wrong: pandas is a bare top-level
+# import in analyse_run.py, and it is imported unconditionally.
+
+pandas
+matplotlib

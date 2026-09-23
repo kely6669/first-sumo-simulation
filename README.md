@@ -249,7 +249,25 @@ python scripts/3_signal_control.py --compare   # 原样 vs 对照组 vs 我的�
 python scripts/3_signal_control.py --gui
 ```
 
-**依赖说明：不需要 pip 安装任何东西**——`traci` 是 SUMO 自带的，装好 SUMO 就有。
+### 依赖说明
+
+`traci` 和 `sumolib` 是 **SUMO 自带的**（在它的 `tools/` 目录里），装好 SUMO 就有，不用 pip 装。
+除此之外只有两个包：
+
+```bash
+pip install -r requirements.txt      # pandas + matplotlib
+```
+
+| 脚本 | 需要什么 |
+|---|---|
+| `1_connect.py`、`2_add_vehicles.py`、`generate_network.py`、`build_from_osm.py`、`run_experiments.py` | 只要 SUMO |
+| `3_signal_control.py` | + pandas（它靠 `analyse_run` 量数据）|
+| `analyse_run.py`、`analyse_results.py` | + pandas；画图还要 matplotlib（没装会打印 `[skip]` 跳过图，数字照算）|
+
+> ⚠️ **这里原来写的是"不需要 pip 安装任何东西"——那是错的。**
+> `analyse_run.py` 顶部就有一句无条件的 `import pandas as pd`。
+> 这个错一直没被发现，因为开发机上本来就装着 pandas——
+> **"在我机器上能跑"这句话，会连依赖声明一起骗过去。**
 
 ---
 
