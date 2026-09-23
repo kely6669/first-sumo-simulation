@@ -27,9 +27,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyse_run as single  # noqa: E402
 from sumo_config import ROOT  # noqa: E402
 
-INDEX = ROOT / "results" / "index.csv"
-SUMMARY_CSV = ROOT / "results" / "summary.csv"
-FIGURE = ROOT / "results" / "plot_strategies.png"
+#: Where a batch lives when --results-dir is not given.  Keep in step with
+#: run_experiments.DEFAULT_RESULTS: this script reads what that one wrote.
+DEFAULT_RESULTS = ROOT / "results"
+
+
+def results_paths(results_dir: Path) -> tuple[Path, Path, Path]:
+    """The three files a batch produces: index in, summary and figure out."""
+    return (results_dir / "index.csv", results_dir / "summary.csv",
+            results_dir / "plot_strategies.png")
+
+
+def _show(path: Path) -> str:
+    """A path the way the user would type it: relative when it is in the repo."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
 
 #: Metrics compared between strategies.  Only the ones that exist are used.
 COMPARED = ["mean_waiting_s", "mean_duration_s", "mean_timeloss_s",
@@ -37,10 +52,10 @@ COMPARED = ["mean_waiting_s", "mean_duration_s", "mean_timeloss_s",
             "trips_completed"]
 
 
-def load_index() -> pd.DataFrame:
-    if not INDEX.exists():
-        raise SystemExit(f"{INDEX} not found - run run_experiments.py first")
-    df = pd.read_csv(INDEX)
+def load_index(index_path: Path) -> pd.DataFrame:
+    if not index_path.exists():
+        raise SystemExit(f"{index_path} not found - run run_experiments.py first")
+    df = pd.read_csv(index_path)
     print(f"[1] index: {len(df)} runs "
           f"({df['strategy'].nunique()} strategies x "
           f"{df['demand'].nunique()} demand levels x "
@@ -74,7 +89,17 @@ def collect(index: pd.DataFrame) -> pd.DataFrame:
         print(f"    [!] {len(missing)} run(s) had no usable output: {missing[:3]}")
         if len(missing) == len(index):
             print("        (all of them - see the note at the end of this output)")
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        # A run driven by a route file has no demand multiplier: its vehicles
+        # are in the file, and run_simulation records demand=None.  Pandas
+        # cannot group by NaN - `df[df.demand == nan]` is empty, because
+        # nan != nan - so every comparison below would silently come out
+        # blank.  Fill it, and remember which runs were filled so the heading
+        # can say "route file" instead of claiming a headway scale.
+        df["demand_injected"] = df["demand"].notna()
+        df["demand"] = df["demand"].fillna(1.0)
+    return df
 
 
 def quality_gate(df: pd.DataFrame) -> list[str]:
@@ -108,10 +133,16 @@ def compare(df: pd.DataFrame) -> None:
     print("=" * 74)
     present = [m for m in COMPARED if m in df.columns]
     for demand in sorted(df["demand"].unique()):
-        label = "higher demand" if demand < 1 else (
-            "lower demand" if demand > 1 else "baseline demand")
-        print(f"\n--- headway scale {demand:.2f}  ({label}) ---")
         sub = df[df["demand"] == demand]
+        if "demand_injected" in df.columns and not sub["demand_injected"].all():
+            # the vehicles came from a route file, so there is no multiplier
+            # to report - saying "headway scale 1.00" would invent one
+            label = "demand from the route file"
+        else:
+            label = "headway scale {:.2f}  ({})".format(
+                demand, "higher demand" if demand < 1 else (
+                    "lower demand" if demand > 1 else "baseline demand"))
+        print(f"\n--- {label} ---")
         for metric in present:
             line = f"  {metric:16s}"
             for strategy in sorted(sub["strategy"].unique()):
@@ -145,7 +176,10 @@ def spread_check(df: pd.DataFrame) -> None:
     for demand in sorted(df["demand"].unique()):
         sub = df[df["demand"] == demand]
         strategies = sorted(sub["strategy"].unique())
-        print(f"\n  headway scale {demand:.2f}")
+        if "demand_injected" in df.columns and not sub["demand_injected"].all():
+            print("\n  demand from the route file")
+        else:
+            print(f"\n  headway scale {demand:.2f}")
         if len(strategies) < 2:
             print("    only one strategy - nothing to compare")
             continue
@@ -164,7 +198,7 @@ def spread_check(df: pd.DataFrame) -> None:
                   f"spread={scatter:4.1f}  -> {verdict}")
 
 
-def plot(df: pd.DataFrame) -> Path | None:
+def plot(df: pd.DataFrame, figure_path: Path) -> Path | None:
     """Mean waiting time per strategy against demand, with seed error bars."""
     try:
         import matplotlib
@@ -198,24 +232,30 @@ def plot(df: pd.DataFrame) -> Path | None:
         axis.legend()
     figure.suptitle("Signal strategy comparison")
     figure.tight_layout()
-    FIGURE.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(FIGURE, dpi=130)
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(figure_path, dpi=130)
     plt.close(figure)
-    return FIGURE
+    return figure_path
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--save", action="store_true",
-                    help="write the per-run table to results/summary.csv")
+                    help="write the per-run table to summary.csv")
+    ap.add_argument("--results-dir", type=Path, default=None,
+                    help="the batch to read.  Default results/, which is what "
+                         "run_experiments.py writes when it is not given one.")
     args = ap.parse_args()
+
+    results_dir = (args.results_dir or DEFAULT_RESULTS).resolve()
+    index_path, summary_csv, figure_path = results_paths(results_dir)
 
     print("=" * 74)
     print("aggregating simulation runs")
     print("=" * 74)
 
-    index = load_index()
+    index = load_index(index_path)
     df = collect(index)
     print(f"[2] cleaned: {len(df)}/{len(index)} runs usable")
 
@@ -247,14 +287,14 @@ def main() -> int:
     spread_check(df)
 
     if args.save:
-        SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(SUMMARY_CSV, index=False)
-        print(f"\nwrote {SUMMARY_CSV.relative_to(ROOT)}")
-    figure = plot(df)
+        summary_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(summary_csv, index=False)
+        print(f"\nwrote {_show(summary_csv)}")
+    figure = plot(df, figure_path)
     if figure:
-        print(f"wrote {figure.relative_to(ROOT)}")
+        print(f"wrote {_show(figure)}")
 
-    print("\nNext steps: feed results/summary.csv into a statistical test "
+    print(f"\nNext steps: feed {_show(summary_csv)} into a statistical test "
           "(Mann-Whitney / t-test), or raise --runs until the spread check "
           "stops asking for more seeds.")
     return 0

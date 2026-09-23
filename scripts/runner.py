@@ -72,20 +72,24 @@ OUTPUT_FILES = {
 EDGE_DATA_PERIOD = 300
 
 
-def _edge_data_additional(run_dir: Path, end: int) -> Path:
+def _edge_data_additional(run_dir: Path, begin: int, end: int) -> Path:
     """Write the additional file that makes SUMO emit edgeData.xml.
 
     SUMO resolves a relative ``file=`` inside an additional file **relative
     to the additional file itself**, so a relative run_dir would be joined
     twice and SUMO would abort with "Could not build output file".  The path
     written here is absolute for that reason.
+
+    ``begin`` and ``end`` are simulation clock times, not offsets: a scenario
+    that starts at 07:00 has vehicles departing at 25200, and an edgeData
+    window of 0..900 would collect nothing at all.
     """
     path = run_dir / "outputs.add.xml"
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<additional>\n"
         f'    <edgeData id="edges" file="{run_dir / "edgeData.xml"}"\n'
-        f'              begin="0" end="{end}" period="{EDGE_DATA_PERIOD}"\n'
+        f'              begin="{begin}" end="{end}" period="{EDGE_DATA_PERIOD}"\n'
         '              excludeEmpty="false"/>\n'
         "</additional>\n",
         encoding="utf-8")
@@ -99,6 +103,7 @@ def run_simulation(
     seed: int = 0,
     demand: float = 1.0,
     duration: int = 900,
+    begin: int = 0,
     net_file: Path = NET_FILE,
     route_file: Path = ROUTE_FILE,
     drive_demand: bool = True,
@@ -115,6 +120,12 @@ def run_simulation(
         demand: headway multiplier; below 1.0 means more traffic.  Ignored
             when ``drive_demand`` is False, because the route file decides.
         duration: how many simulation seconds to run.
+        begin: simulation clock time to start at, in seconds.  The hand-made
+            cross starts at 0, but a real scenario carries real departure
+            times: cologne1's vehicles leave between 07:00 and 08:00, so
+            starting at 0 would run an hour of empty road and then stop.
+            With ``begin`` set, the run still lasts ``duration`` seconds; it
+            just happens later on the clock.
         net_file: the network to load.  Built on demand if it is the
             hand-written cross and the file is missing.
         route_file: route definitions.  With ``drive_demand`` it only needs
@@ -143,13 +154,14 @@ def run_simulation(
         "--summary-output", str(run_dir / OUTPUT_FILES["summary"]),
         "--queue-output", str(run_dir / OUTPUT_FILES["queues"]),
         "--seed", str(seed),
+        "--begin", str(begin),
         "--no-step-log", "true",
         # never teleport: SUMO would otherwise move a stuck vehicle forward
         # and quietly improve the travel times we are trying to measure
         "--time-to-teleport", "-1",
     ]
     if edge_data:
-        cmd += ["-a", str(_edge_data_additional(run_dir, duration))]
+        cmd += ["-a", str(_edge_data_additional(run_dir, begin, begin + duration))]
     if gui:
         cmd += ["--start", "true", "--delay", "60"]
 
@@ -195,6 +207,7 @@ def run_simulation(
         "seed": seed,
         "demand": demand if drive_demand else None,
         "duration": duration,
+        "begin": begin,
         "drive_demand": drive_demand,
         "requested": injector.inserted if injector else None,
         "departed": departed,

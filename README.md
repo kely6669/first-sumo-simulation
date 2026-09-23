@@ -684,13 +684,113 @@ Max Pressure 的判据是 `排队(进口) − 排队(出口)`，三个相位的�
 > 拿它去排"哪个算法更好"，排出来的只是噪声。
 >
 > 想真的比出东西，得换有多个路口、每个方向有独立出口、需求有波动的场景——
-> 比如 [RESCO](https://github.com/Pi-Star-Lab/RESCO) 那三个真实路网
-> （Cologne / Luxembourg / Salt Lake City）。它们用的是同一套 SUMO + TraCI，
-> 换过去只是换 `.net.xml` 和 `.rou.xml`。
+> 比如 [RESCO](https://github.com/Pi-Star-Lab/RESCO) 那套真实路网
+> （Cologne、Ingolstadt、Salt Lake City，外加 arterial4x4 / grid4x4 两个合成路网）。
+> 它用的就是同一套 SUMO，每个场景只是三个文件：`.net.xml` + `.rou.xml` + `.sumocfg`。
+> 它同时提供了这个领域真正的三条基准线：**Fixed Time、Max Pressure、Max Wave**。
 >
 > 顺带一提：MIT 2022 年那篇 [NeurIPS 论文](https://ar5iv.labs.arxiv.org/html/2210.08607)
-> 在 MDP 系列场景上发现，**不学习的 Fixed Time 和 Max Pressure 打赢了四个 DRL 方法**。
+> 就是拿 RESCO 做的案例研究——在 164 个 Salt Lake City 路口上重测，
+> **不学习的 Fixed Time 和 Max Pressure 打赢了四个 DRL 方法**。
 > 这个领域里，"我的方法赢了"这句话，得先问清楚它赢的是谁。
+
+#### 第七幕：换到真实路网，一半的结论活下来了
+
+第六幕结尾我说"得换个能区分控制器的场景"。我去换了，用的是
+[RESCO](https://github.com/Pi-Star-Lab/RESCO) 的四个真实路网：
+
+| 场景 | 信号灯 | 车流 | 信号周期 |
+|---|---|---|---|
+| ingolstadt1（德国）| 1 | 1716 辆/小时 | 90 s |
+| cologne3（科隆）| 3 | 4494 辆/小时 | 90 s |
+| ingolstadt7（德国）| 7 | 3031 辆/小时 | 90 s |
+| cologne8（科隆）| 8 | 2046 辆/小时 | 90 s |
+
+> ⚠️ **cologne1 用不了，这里记一下。** 它的信号方案是**占位符**：8 个相位全是
+> 5 秒、一个黄灯都没有。控制器每秒看一次，等它看到"这个绿灯已经亮了 10 秒"，
+> 那个相位早就过去了——实测 `switches = 0`，一次都没动过。
+> 选场景之前先看相位表，别假设下载来的路网配时一定是真的。
+
+每个场景跑四个策略 × 5 个随机种子，指标是"平均每辆车等多少秒"：
+
+| 场景 | `fixed` | `timed` | `actuated` | `pressure` |
+|---|---|---|---|---|
+| ingolstadt1 | 20.3 ± 0.5 | **10.7 ± 0.2** | 15.8 ± 0.5 | 17.3 ± 1.5 |
+| cologne8 | 30.6 ± 0.7 | **27.3 ± 1.3** | 28.7 ± 0.6 | 29.1 ± 1.5 |
+| ingolstadt7 | 50.4 ± 1.7 | 36.4 ± 1.0 | 36.2 ± 2.3 | **34.1 ± 2.3** |
+| cologne3 | **48.3 ± 2.5** | 51.0 ± 3.1 | 49.7 ± 1.2 | 51.1 ± 1.9 |
+
+`±` 是 5 个种子之间的标准差。**种子是必须跑的**：同一套设置换个种子，
+ingolstadt7 的 `fixed` 能从 47.4 变到 51.4，比好几个策略之间的差距还大。
+
+**三条结论，只有第一条是完全站得住的：**
+
+**① 路网自带的方案很差，换掉它就省一大截。**
+四个场景里三个，`fixed` 是最差的，而且差得多——ingolstadt1 差一倍，
+ingolstadt7 差 15 秒。这两个差距远超种子波动，是真的。
+
+**② 但一个傻瓜固定配时就把这份好处基本吃干净了。**
+`timed` 用同一个 15 秒设置跑遍全部四个场景，**没有针对任何一个调过**，
+却两个场景最好、一个打平，只在过饱和的 cologne3 上更差。
+
+**③ 三个"非默认"策略之间的差距，大多只是勉强超过噪声。**
+
+- ingolstadt1：`timed` 领先 `actuated` 5.1 秒，两边波动 0.2 / 0.5 —— **是真的**。
+- cologne8：领先 1.4 秒，可 `timed` 自己跑 5 次就抖了 3.5 秒 —— **说不清**。
+- ingolstadt7：`pressure` 领先 2.3 秒，波动 2.3 / 1.0 —— **勉强**。
+- cologne3：四个策略全在噪声里。
+
+**还有一处是我自己打自己。** 第六幕里"10 秒绿灯"是十字路口的最优值，
+换到 ingolstadt1 一测**也是 10 秒**，当时我以为找到规律了。
+把另外三个场景也扫一遍，最优点分别是 8 秒、20 秒、15 秒。
+**"10 秒"不是规律，是那两个路口的答案。**
+
+**所以"最笨的方案赢了"到底活下来没有？活下来了，但形状变了：**
+
+- **活的**：一个不看车流的固定配时，确实能打赢路网自带的方案，
+  也确实能和自适应控制器打平甚至更好。从手写十字路口一路复现到德国和卢森堡的真实路口。
+- **变了的**：单点路口上控制器根本没有操作空间（第六幕：三个绿灯相位只有一个能动）；
+  到了多路口场景，自适应控制器能追上来，`pressure` 在 ingolstadt7 上还是最好的。
+- **新的一条**：**过饱和时怎么控都没用。** cologne3 是 4494 辆/小时的场景，
+  四个策略的差距全在噪声里——信号控制有它的作用边界。
+
+> 📌 **这一节我做对的只有一件事：给每个数字配上了种子波动。**
+>
+> 没有它，我会把两件假的东西写成真的：
+>
+> 一是 ingolstadt1 上 `pressure` 和 `actuated` **种子 0 恰好逐秒相同**，
+> 我当时已经把它当成"机制"解释了；换成 5 个种子，它们立刻分开（15.8 vs 17.3）。
+> 二是 cologne8 上那 1.4 秒的差距——它比这个策略自己的抖动还小。
+>
+> **同一个实验，加不加误差棒，能得出完全相反的结论。**
+
+**怎么自己跑一遍**（约 40 分钟，80 次仿真）：
+
+```bash
+# 1) 下载场景文件。RESCO 是 GPL-3.0，本仓库是 MIT，所以不随仓库分发，
+#    放在 net/resco/（已 gitignore）
+BASE=https://raw.githubusercontent.com/Pi-Star-Lab/RESCO/main/resco_benchmark/environments
+mkdir -p net/resco
+for S in ingolstadt1 ingolstadt7 cologne3 cologne8; do
+  for F in $S.net.xml $S.rou.xml; do
+    curl -L -o net/resco/$F $BASE/$S/$F
+  done
+done
+
+# 2) 四个策略 × 5 个种子。--route-file 表示车流由文件决定（真实场景都是这样），
+#    --begin 是仿真时钟的起点：这些车是 16:00 或 07:00 出发的，从 0 开始会跑一小时空路
+python scripts/run_experiments.py \
+    --net-file net/resco/ingolstadt1.net.xml \
+    --route-file net/resco/ingolstadt1.rou.xml \
+    --begin 57600 --duration 3600 --runs 5 \
+    --results-dir results/resco
+
+# 3) 汇总。每个场景单独一个 --results-dir，因为一个批次是原子的，会先清空目录
+python scripts/analyse_results.py --results-dir results/resco --save
+```
+
+各场景的起点不一样（cologne 系列是 25200，ingolstadt 系列是 57600），
+cologne3 的车从 23512 就开始发，所以它要 `--begin 23512 --duration 5300`。
 
 ---
 
@@ -777,12 +877,13 @@ CONTROLLERS["mine"] = MyController
 - [x] 控制器和具体路网解耦，能用在别人的路网上（`control.discover_plans`）
 - [x] 一个仿真入口，两种车流来源（`runner.run_simulation` 的 `drive_demand`）
 - [x] 固定配时对照组 + Max Pressure，四个策略同台（`control.py`）
-- [ ] **换一个真的能区分控制器的场景**（见坑三第六幕：本路口只有一个相位可动）
+- [x] 换成真实路网再测一遍，并带上种子误差棒（坑三第七幕，`run_experiments.py --net-file`）
+- [ ] **用带时变车流的场景再测一次**——现在的场景都是稳定车流，自适应控制的价值本来应该体现在车流变化上（RESCO 的 Salt Lake City 场景带一整年真实流量，还没接）
 - [ ] 控制器只看排队长度，没考虑等待时间和延误
-- [ ] `pressure` 的输出车道项在共享出口时会抵消，需要一个非退化的路网才能验它
+- [ ] `pressure` 的输出车道项在共享出口时会抵消，需要专门构造一个非退化的路网才能验它
 - [ ] 只管单点，没做相邻路口的协调（绿波带）；多路口时每步要查几百次 TraCI，能再快
 - [ ] 车流是合成的，没做过标定
-- [ ] spread check 只是"差 vs 波动"的粗判，还没接正式的统计检验（Mann-Whitney / t 检验）
+- [ ] spread check 只是"差 vs 波动"的粗判，还没接正式的统计检验（Mann-Whitney / t 检验）；第七幕里那些"勉强"的结论，正是需要正式检验的地方
 
 ---
 
@@ -790,7 +891,7 @@ CONTROLLERS["mine"] = MyController
 
 - [SUMO 官方文档](https://sumo.dlr.de/docs/)
 - [TraCI 接口文档](https://sumo.dlr.de/docs/TraCI/index.html)
-- [RESCO](https://github.com/Pi-Star-Lab/RESCO) — 真实路网 + 固定配时 / Max Pressure / Max Wave 基准，坑三第六幕说的就是它
+- [RESCO](https://github.com/Pi-Star-Lab/RESCO) — 真实路网 + 固定配时 / Max Pressure / Max Wave 基准。坑三第六幕提到它，第七幕用的就是它的四个场景（GPL-3.0，所以仓库里不附带，README 里有下载命令）
 - [sumo-rl](https://github.com/LucasAlegre/sumo-rl) — 想上强化学习的话看这个
 
 ---

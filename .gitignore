@@ -58,6 +58,20 @@ net/real.net.rou.xml
 net/*.osm
 net/*.osm.gz
 
+# Third-party scenarios, downloaded rather than written here.
+#
+# net/resco/ holds scenarios from the RESCO benchmark, which is GPL-3.0.
+# This repository is MIT, so they are not redistributed with it - not even
+# the .net.xml files, which are compiled data rather than code but carry the
+# same licence.  The README says which ones to fetch and from where; the
+# results of running them are committed as numbers.
+net/resco/
+
+# Raw output of those runs: same reasoning as results/runs/ above.
+results/resco/
+results/resco_seeds/
+results/resco_sweep/
+
 # editors and OS
 .vscode/
 .idea/
